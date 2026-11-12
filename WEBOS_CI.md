@@ -75,8 +75,8 @@ into `$WORK_DIR/flutter-webos`.
 
 1. Sources `scripts/webos/env.sh` and puts `$WORK_DIR/node/bin` on `PATH`.
 2. `flutter-webos --version` (first run downloads Flutter 3.38.10 and Dart 3.10.9).
-3. `flutter-webos pub get`. This rewrites 7 entries in `pubspec.lock` until a lock file resolved
-   with Flutter 3.38.10 is committed.
+3. `flutter-webos pub get`. The committed `pubspec.lock` is resolved with Flutter 3.38.10, so this
+   should leave it unchanged.
 4. `flutter-webos build webos --release`, producing
    `build/webos/arm/release/ipk/com.edde746.plezy_<ver>_arm.ipk`.
 5. `scripts/webos/build_32bit_ipk.sh`, which writes `dist/com.edde746.plezy_<ver>_arm_webos25-26.ipk`

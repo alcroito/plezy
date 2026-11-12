@@ -177,9 +177,9 @@ Logs: `/media/developer/temp/plezy_appdata/log`.
   14-16.
 - `scripts/webos/env.sh` does not put the bundled `flutter` on `PATH`; use
   `flutter-webos pub get`.
-- The committed `pubspec.lock` was resolved with a newer Flutter. With Flutter 3.38.10, `pub get`
-  changes `characters`, `intl`, `matcher`, `material_color_utilities`, `meta`, `test_api` and
-  `vector_math` to the versions that SDK pins.
+- `pubspec.lock` must be resolved with Flutter 3.38.10 (`flutter-webos pub get`). A lock file from
+  a newer Flutter pins newer `characters`, `intl`, `matcher`, `material_color_utilities`, `meta`,
+  `test_api` and `vector_math`, which `pub get` then downgrades to the versions 3.38.10 pins.
 - In OrbStack Ubuntu 26.04 VMs, GNU tar `1.35+dfsg-4ubuntu0.4` fails with "Function not
   implemented" when extracting into subdirectories. That build backports `openat2` support for
   `CVE-2025-45582`; the VM most likely rejects that call (not confirmed). The NDK installer and `build_32bit_ipk.sh` both use `tar`. Workarounds:
