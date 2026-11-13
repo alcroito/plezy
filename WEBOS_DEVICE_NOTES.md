@@ -110,7 +110,7 @@ curl -sS -X POST -H 'Content-Type: application/json' -d '{"action":"launchApp","
 ```
 
 A same-version reinstall works (`direction: same`). Installing replaces a running app; launch it
-again afterwards.
+again afterwards. Launching also works without Glasshouse, with `luna-send` over SSH (section 11).
 
 Glasshouse can also subscribe to a Homebrew Channel repository, for example
 `https://github.com/alcroito/plezy/releases/latest/download/plezy-webos6-24.repo.json`
@@ -139,9 +139,10 @@ changed. `~/bin/tar` in the VM is the Ubuntu 24.04 tar (see gotchas).
 
 ## 7. Gotchas
 
-- **`luna-send` over SSH does nothing.** As root over SSH, `luna-send` and `luna-send-pub`
-  (`luna://com.webos.service.applicationmanager/launch`) exit 0 with no output and do not launch the
-  app. Use the Glasshouse `launchApp` control instead.
+- **`luna-send` exits when its stdin ends.** `ssh root@$TV 'luna-send ...'` gives it an empty,
+  closed stdin, so it often exits at once with code 0 and no output, before the reply arrives (fast
+  services sometimes win the race). Keep stdin open with `sleep N | luna-send -n 1 -w <ms> ...` or
+  use `ssh -tt`; `-w` makes a hung service time out. See section 11, "Without Glasshouse".
 - **BusyBox on the TV.** `grep --line-buffered` and `sed -u` do not exist; a live `tail -F | grep`
   pipeline fails. Read `/var/log/messages` after the fact instead; it rotates every few minutes
   under load, so check soon.
@@ -435,9 +436,58 @@ Project name `plezy` and app id `com.edde746.plezy` (set in `webos/meta/appinfo.
 project's `scripts/webos/`, run `flutter-webos build webos --release`, then the script. Installing it
 replaces Plezy on the TV (version `1.0.0`, Glasshouse shows `direction: down`); reinstall Plezy after.
 
-### Other dead ends
+### Without Glasshouse: luna-send and the network-input socket
 
-- Screen captures: `com.webos.service.capture/executeOneShot` (`DISPLAY`, `PNG`) gave no reply here
-  because the capture service was hung by the graphics engine failure (section 9), not because of
-  `luna-send` over SSH. After a reboot it worked in a separate session (960x540 unless `width` and
-  `height` are given). Use `luna-send -w <ms>` so a hung service times out instead of waiting.
+All verified over root SSH on the G4. `luna-send` needs an open stdin (gotcha in section 7):
+
+```bash
+L() { ssh root@$TV "sleep 15 | luna-send -n 1 -w 10000 $1 '$2'"; }
+```
+
+Screenshot (the TV's cursor is not in the image; without `width`/`height` it is 960x540):
+
+```bash
+L luna://com.webos.service.capture/executeOneShot \
+  '{"path":"/tmp/shot.png","method":"DISPLAY","format":"PNG","width":1920,"height":1080}'
+scp root@$TV:/tmp/shot.png .
+```
+
+Launch an app and check which one is in front:
+
+```bash
+L luna://com.webos.service.applicationmanager/launch '{"id":"com.edde746.plezy"}'
+L luna://com.webos.service.applicationmanager/getForegroundAppInfo '{}'
+```
+
+Keys and pointer go through the network-input socket that Glasshouse also uses.
+`luna://com.webos.service.networkinput/getPointerInputSocket` returns its path
+(`/tmp/netinput.pointer.sock`, root only). Each command is the phone-remote protocol text ending in a
+blank line, prefixed with its length as a 32-bit big-endian integer. Python 3 is on the TV; copy this
+to `/tmp/netinput.py` (gone after a reboot):
+
+```python
+# Usage: python3 netinput.py 'type:button\nname:RIGHT' sleep:1 'type:move\ndx:20\ndy:10\ndown:0'
+import socket, struct, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect("/tmp/netinput.pointer.sock")
+for arg in sys.argv[1:]:
+    if arg.startswith("sleep:"):
+        time.sleep(float(arg[6:])); continue
+    body = (arg.replace("\\n", "\n") + "\n\n").encode()
+    s.sendall(struct.pack(">I", len(body)) + body)
+time.sleep(0.2)
+s.close()
+```
+
+| Command | Arrives as (LSM log) |
+| --- | --- |
+| `type:button\nname:RIGHT` | `key_code 106` press and release from "Smart Remote RCU Input" |
+| `type:move\ndx:20\ndy:10\ndown:0` | pointer move from "LGE Smart Remote - TouchPad"; shows the cursor |
+| `type:click` | `mouseEventCallback key= 272` at the cursor position |
+| `type:scroll\ndx:0\ndy:-1` | a wheel event |
+
+Only `RIGHT` was tried as a button name; other names presumably follow the same protocol (`LEFT`,
+`UP`, `DOWN`, `ENTER`, `BACK`, ...), not verified.
+
+The screenshot hangs with no reply if the capture service is stuck, as during the graphics engine
+failure in section 9; that is a TV problem, not `luna-send`.

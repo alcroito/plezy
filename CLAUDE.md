@@ -77,8 +77,10 @@ in `pubspec.yaml`, so `scripts/codegen.sh` does not run; generated files are com
 
 ## Testing on the TV
 
-Install and launch through Glasshouse's HTTP API on the TV, read logs over root SSH; full commands
-in `WEBOS_DEVICE_NOTES.md`. `luna-send` over SSH does not launch apps on the test TV.
+Install through Glasshouse's HTTP API on the TV, read logs over root SSH; full commands in
+`WEBOS_DEVICE_NOTES.md`. `luna-send` over SSH works for launching apps, screenshots and (through the
+network-input socket) keys and pointer, but only with stdin kept open:
+`ssh root@$TV 'sleep 15 | luna-send -n 1 -w 10000 <uri> <json>'` (it exits when stdin ends).
 
 ## Rules for changes
 
