@@ -1,0 +1,327 @@
+# webOS Device Notes: Connecting, Installing, Logs, Gotchas, Magic Remote, Debugging
+
+Practical notes from working on a real TV. Related docs: `BUILD_WEBOS.md` (manual build),
+`WEBOS_CI.md` (CI and releases), `WEBOS_COMPAT_PATCHING.md` (the webOS 6-24 package).
+
+Examples below use `$TV` for the TV's IP address and `<path-to-checkout>` for this repository's
+location. Local values belong in `CLAUDE.local.md` (not committed).
+
+## 1. Test TV
+
+| Item | Value |
+| --- | --- |
+| Model | LG G4 (2024) |
+| webOS | 9.2.0 (`ombre-okapi`), webOS 24 |
+| Userland | 32-bit ARM (`lib32`) on an `aarch64` kernel |
+| Access | Rooted with the webOS Homebrew Channel; root SSH on port 22 |
+| Package to install | `com.edde746.plezy_<ver>_arm_webos6-24.ipk` (the webOS 25-26 one does not start) |
+
+Developer Mode SSH (`prisoner@$TV -p 9922`) was refused on this TV; root SSH is what works.
+
+## 2. Connecting
+
+```bash
+TV=<tv-ip>
+ssh root@$TV                         # interactive
+ssh -o BatchMode=yes root@$TV 'cmd'  # scripted; fails instead of prompting
+```
+
+The TV's OpenSSH prints a "not using a post-quantum key exchange" warning on every connection;
+filter it out of scripted output with
+`grep -v -i -E 'post-quantum|store now|upgraded'`.
+
+Useful device facts:
+
+```bash
+ssh root@$TV 'cat /var/run/nyx/os_info.json; uname -m'
+```
+
+## 3. Where things are on the TV
+
+| Path | Contents |
+| --- | --- |
+| `/media/developer/apps/usr/palm/applications/com.edde746.plezy/` | Installed app: `plezy`, `lib/`, `data/`, `appinfo.json` |
+| `.../com.edde746.plezy/appdata/plezy_runtime.log` | **App log**, written by `lib/utils/app_logger.dart`; survives reinstalls |
+| `/media/developer/temp/plezy_appdata/` | App data redirected by `libwebos_compat32.so` (settings, databases, image cache); mode `0777` |
+| `/media/developer/temp/plezy_appdata/log/` | Empty in practice; the app log goes to `plezy_runtime.log` instead |
+| `/var/log/messages` | System log: compositor, remote input, the Flutter embedder's own lines; rotated often (`messages.0.gz` ...) |
+
+Check the running process:
+
+```bash
+ssh root@$TV 'ps -eo pid,etime,args | grep "[c]om.edde746.plezy/plezy"'
+```
+
+## 4. Logs
+
+### App log
+
+```bash
+ssh root@$TV 'tail -n 50 /media/developer/apps/usr/palm/applications/com.edde746.plezy/appdata/plezy_runtime.log'
+```
+
+Each launch starts with `Startup phase: phase=dart_main`. Lines tagged `[WebOS-Back]` and
+`[WebOS-HWKey]` come from the webOS hooks in `lib/main.dart`.
+
+### System log (`/var/log/messages`)
+
+Useful sources:
+
+| Pattern | Meaning |
+| --- | --- |
+| `flutter embedder ... [com.edde746.plezy][<file>.cc(<line>)]` | LG's Flutter embedder for this app |
+| `wayland_seat_inputs.cc(438)] OnKey(key=...)` | A key reached the app's window |
+| `elinux_window_wayland.cc(191)] Set Wayland view : use_mouse_cursor:N` | Embedder startup settings |
+| `lginput2 MRCU ... [KEY_OK] button press` | Magic Remote button, as read by the TV |
+| `surface-manager LSM ... mouseEventCallback key= 272 x= .. y= ..` | Compositor received a left click at a screen position |
+| `QPA_KEY_INPUT name= "Key_webOS_CursorShow"` / `CursorHide` | Pointer shown/hidden (key codes 1198 / 1199) |
+| `video_player_webos VideoPlayerPlugin ... _WEBOS_ACCESS_POLICY_KEYS_BACK` | Back key policy, logged every 2 s while the app runs |
+
+Example: everything the embedder logged since the last start of the app, grouped by source line:
+
+```bash
+ssh root@$TV 'n=$(grep -n "use_mouse_cursor" /var/log/messages | tail -1 | cut -d: -f1)
+tail -n +$n /var/log/messages | grep "flutter embedder" | sed -E "s/.*\[com.edde746.plezy\]//; s/^(\[[^]]*\]).*/\1/" | sort | uniq -c | sort -rn'
+```
+
+## 5. Installing and launching through Glasshouse
+
+Glasshouse ([rorygallagher2024/glasshouse](https://github.com/rorygallagher2024/glasshouse)) runs on
+the TV at `http://$TV:8080/`. Uploads need `apps.sideload: true` in its `config.json` (enabled on the
+test TV).
+
+```bash
+GH=http://$TV:8080
+IPK=dist/com.edde746.plezy_2.26.0_arm_webos6-24.ipk
+
+# 1. Upload; the job goes to "verifying", then "awaiting-confirm"
+curl -sS -X POST -H 'Content-Type: application/octet-stream' --data-binary @"$IPK" $GH/api/apps/install/upload
+
+# 2. Read the preview: preview.direction is new/update/same, plus rootRequired, storeInstalled
+curl -sS $GH/api/apps/install/status
+
+# 3. Confirm with the jobId from the status, without root
+curl -sS -X POST -H 'Content-Type: application/json' -d '{"jobId":"<jobId>","elevate":false}' $GH/api/apps/install/confirm
+
+# 4. Poll status until state is "installed" (or "error")
+
+# 5. Launch
+curl -sS -X POST -H 'Content-Type: application/json' -d '{"action":"launchApp","value":"com.edde746.plezy"}' $GH/api/control
+```
+
+A same-version reinstall works (`direction: same`). Installing replaces a running app; launch it
+again afterwards.
+
+Glasshouse can also subscribe to a Homebrew Channel repository, for example
+`https://github.com/alcroito/plezy/releases/latest/download/plezy-webos6-24.repo.json`
+(see `WEBOS_CI.md`). After a catalog changes, refresh or re-add it; Glasshouse caches catalogs.
+
+To check an IPK the way Glasshouse will, with a local Glasshouse checkout:
+
+```bash
+node -e 'require("./server/lib/installer.js").inspectIpk(process.argv[1], (e, i) => console.log(e || i))' my.ipk
+```
+
+## 6. Build-and-reinstall loop (OrbStack)
+
+The OrbStack VM `ubuntu` (x86_64, Ubuntu 26.04) has the toolchain and sees the Mac checkout at the
+same path.
+
+```bash
+orb -m ubuntu bash -lc 'export PATH=$HOME/bin:$PATH
+  cd <path-to-checkout>
+  scripts/webos/ci/build.sh > /tmp/b.log 2>&1; echo rc=$?'
+# then install dist/*_arm_webos6-24.ipk with the Glasshouse steps above
+```
+
+An incremental build takes about 2 minutes when Dart code changed, about 15 s when only the runner
+changed. `~/bin/tar` in the VM is the Ubuntu 24.04 tar (see gotchas).
+
+## 7. Gotchas
+
+- **`luna-send` over SSH does nothing.** As root over SSH, `luna-send` and `luna-send-pub`
+  (`luna://com.webos.service.applicationmanager/launch`) exit 0 with no output and do not launch the
+  app. Use the Glasshouse `launchApp` control instead.
+- **BusyBox on the TV.** `grep --line-buffered` and `sed -u` do not exist; a live `tail -F | grep`
+  pipeline fails. Read `/var/log/messages` after the fact instead; it rotates every few minutes
+  under load, so check soon.
+- **zsh does not split words.** `ssh $t` with `t="root@host -p 22"` passes one argument
+  ("hostname contains invalid characters"). Use an array or a function with `"$@"`.
+- **macOS `ar`** cannot read GNU-style `ar` archives (member names ending in `/`), which
+  `build_32bit_ipk.sh` produces with `ar r`. Glasshouse and the TV accept them.
+- **Glasshouse refuses GNU tar extensions.** Long paths (over 100 characters) in GNU format
+  (`@LongLink`) are rejected as "uses a file format this installer does not read". Pack with
+  `tar --format=ustar`; `build_32bit_ipk.sh` does.
+- **Glasshouse catalogs need the manifest inline** in each package entry; an entry with only
+  `manifestUrl` shows as 0 apps.
+- **OrbStack VM and GNU tar.** Ubuntu 26.04's `tar 1.35+dfsg-4ubuntu0.4` fails with "Function not
+  implemented" when extracting into subdirectories (likely the `openat2` call from the
+  CVE-2025-45582 fix; not confirmed). Workarounds: `bsdtar`, or the Ubuntu 24.04 `tar` binary in
+  `~/bin`. The LG NDK installer calls `tar` as root, so it needed a copy patched to use `bsdtar`.
+- **ares and Node.** `@webos-tools/cli` 3.2.6 requires Node.js 20 or later (LG's guide says 14-16).
+- **LG NDK installer license.** `-y` accepts LG's SDK license agreement.
+- **Pushing workflow files.** GitHub rejects pushes that change `.github/workflows/` from an OAuth
+  token without the `workflow` scope; pushing over SSH works.
+- **`gh auth refresh` is interactive** (one-time code plus browser); run it in a normal terminal.
+- **Release asset caching.** After replacing a release asset, `releases/latest/download/...` can
+  serve the old file for a short time.
+- **Same version, no update.** Rebuilding without changing the version in `pubspec.yaml` gives a new
+  IPK hash but the same version, so the Homebrew Channel offers no update.
+- **Back key on the home screen.** When the app cannot handle Back itself it sets
+  `_WEBOS_ACCESS_POLICY_KEYS_BACK` to false, so webOS takes Back and sends the app to the
+  background. The app log then shows `reason: resume` on return.
+
+## 8. Magic Remote pointer: root cause and fix
+
+**Symptom.** On webOS 24 (G4), D-pad navigation worked but Magic Remote pointer clicks did nothing,
+wherever you clicked. LG's stock `flutter-webos create` template app behaves the same way on this
+TV, so this is not specific to Plezy.
+
+### Root cause (LG embedder, verified on the TV)
+
+LG's embedder (`libflutter_webos_media.so`, derived from Sony's `flutter-embedded-linux`; no source
+is published) binds every `wl_seat` and creates a `wl_pointer`, `wl_touch` and `wl_keyboard` on
+each. It attaches touch and keyboard listeners on every seat, but
+`WaylandSeatInputs::AddPointer(wl_pointer*)` attaches the pointer listener only when the pointer
+belongs to `ELinuxWindowWayland::GetDefaultSeatInfo()`. That function returns the seat named
+`default`, or the first seat when none has that name. LSM on webOS 24 (Qt 5.12.4) sends no
+`wl_seat.name` events, so the "default" seat is simply the first one bound.
+
+The compositor delivers Magic Remote pointer events on that device's own seat (one of four `wl_seat`
+globals on this TV), not on the first one. Those events go to a `wl_pointer` without a listener.
+libwayland drops them silently, and its debug trace does not print events for objects without a
+listener, so the trace shows no pointer events at all.
+
+Found by disassembling `AddPointer` and `GetDefaultSeatInfo` (see "Reading LG's binaries" below).
+
+### Fix (runner, no change to LG's binaries)
+
+`webos/runner/webos_pointer_seats.cc` defines `wl_proxy_add_listener` in the runner executable, and
+`webos/runner/user_build.cmake` exports it (`-Wl,--export-dynamic-symbol=wl_proxy_add_listener`).
+Because the executable comes first in symbol lookup, the embedder's calls reach this function
+instead of libwayland-client's:
+
+- It records every `wl_seat` the embedder attaches a listener to.
+- When the embedder attaches its pointer listener (once, to the default seat's pointer), it leaves
+  that `wl_pointer` without a listener, creates its own `wl_pointer` on every recorded seat, and
+  attaches the embedder's listener and data to each. Every seat delivers pointer events, none twice.
+- Seats bound later get a pointer immediately. If the embedder attaches a different listener or
+  data (window recreated), the old pointers are released and new ones created.
+- Everything else is forwarded to the real `wl_proxy_add_listener` (`dlsym(RTLD_NEXT, ...)`).
+
+Verified on the G4 (webOS 24 package): clicks injected through Glasshouse arrive in Flutter as
+`PointerDownEvent`/`PointerUpEvent` (kind `mouse`), and manual hover and clicks with the Magic Remote
+worked. Not tested: the webOS 25-26 package (no webOS 26 TV available). Known limitation: if the
+compositor removes a seat at runtime, the recorded seat pointer is stale; it is only used again if
+the embedder attaches a new pointer listener.
+
+### Ruled out on the way
+
+- **Plezy's Dart code.** The cursor "parking" in `lib/main.dart` (`_clearFrozenWebosMouseHover`)
+  only sends a synthetic `PointerRemovedEvent` on key presses. The stock template fails the same way.
+- **`use_mouse_cursor`.** LG's runner template hard-codes `UseMouseCursor()` to `false`
+  (`runner_base/flutter_embedder_options.h`). Setting `vp.use_mouse_cursor = true` changed nothing;
+  in Sony-derived embedders it only controls the cursor image. Kodi's webOS port notes that
+  `wl_pointer.set_cursor` "completely breaks pointer input" on webOS, so leave it off.
+- **The 1.5x scale.** With `force_scale_factor` the surface is 2880x1620 and LSM places its item at
+  `-480,-270` (centered on the 1920x1080 output). With the scale disabled (1920x1080 at `0,0`) clicks
+  still did not arrive.
+- **The webOS 6-24 compat shim.** It wraps `wl_proxy_marshal_flags` (version clamp for webOS 23) but
+  does not touch events; the unpatched template showed the same behavior.
+- **Window properties, `wl_starfish_pointer`, `wl_webos_xinput`.** LG's SDL2 sets more shell surface
+  properties (`_WEBOS_WINDOW_TYPE`, `title`, `cursor_fps`, ...) and binds `wl_starfish_pointer`, but
+  neither gates pointer delivery: `wl_starfish_pointer` only carries Magic Remote standby-timer and
+  cursor-position requests, and LSM's `WebOSSurfaceItem::mousePressEvent` has no property check.
+
+### Evidence trail (for similar problems)
+
+- LSM logs every click (`surface-manager LSM ... mouseEventCallback key= 272 x= .. y= ..`) but not
+  which surface got it; the same lines appear for web apps.
+- Each click produced one `wl_touch.cancel()` on the Magic Remote's seat. That comes from LSM's
+  `WebOSSurfaceItem::mouseUngrabEvent` (open source in webOS OSE `luna-surfacemanager`): Qt 5 ungrabs
+  the item after the release, which proves the click reached Plezy's surface item in the compositor.
+- LSM's `mousePressEvent` and Qt's `QWaylandPointer::sendButton`/`sendEnter` on the TV match
+  upstream: they send to every `wl_pointer` the focused client created on that seat. That pointed at
+  the client side.
+- The cursor show/hide keys (1198/1199) do reach the app as `wl_keyboard.key` on a device seat.
+
+## 9. Debugging techniques
+
+### Wayland protocol trace
+
+LG's libwayland-client writes the `WAYLAND_DEBUG` trace to a file, not stderr: `/tmp/wayland_<name>_<pid>.log`
+on the TV, or the path in `WAYLAND_DEBUG_PATH`. Apps launched by the system cannot be given
+environment variables, so set it at the top of `main()` in `webos/runner/main.cc` (TEMP, do not
+commit; it writes every frame callback):
+
+```cpp
+setenv("WAYLAND_DEBUG", "client", 1);
+```
+
+Summarize the trace by message type:
+
+```bash
+ssh root@$TV 'f=$(ls -t /tmp/wayland_plezy_*.log | head -1)
+sed -E "s/^\[[^]]*\]\[pid:[0-9]+\]\[tid:[^]]*\] *//" $f |
+  grep -oE "^(-> )?[a-z_]+@[0-9]+\.[a-z_]+" | sed -E "s/@[0-9]+//" | sort | uniq -c | sort -rn'
+```
+
+Events for objects without a listener are not printed.
+
+### Injecting pointer input through Glasshouse
+
+Glasshouse exposes the TV's network-input pointer (the phone-remote path), which the compositor
+handles like the Magic Remote. It needs `pointer.enabled` and `allowControl` in Glasshouse's config.
+
+```bash
+GH=http://$TV:8080
+curl -X POST -H 'Content-Type: application/json' -d '{"move":[{"dx":-30,"dy":-15}]}' $GH/api/pointer
+curl -X POST -H 'Content-Type: application/json' -d '{"click":true}' $GH/api/pointer
+```
+
+Moves are relative, so the absolute position is unknown; read it from the LSM log line
+`mouseEventCallback key= 272 x= .. y= ..`. Body fields: `move` (up to 120 `{dx, dy, down}`), `click`,
+`down`, `up`, `scroll`.
+
+### The app jail
+
+Native apps run in a jail (`/var/palm/jail/<app-id>/`). Its `tmp` is the TV's `/tmp`. The app's
+stderr is not logged anywhere by default. The app runs as an unprivileged user (uid 5546 here).
+
+### Reading LG's binaries
+
+- LG's embedder libraries in `webos/flutter/ephemeral/` keep C++ symbols and source paths
+  (`/root/flutter-embedded-linux/src/...`), so `strings` and symbol tables show class and method
+  names (`WebOSSystemPlugin`, `WebOSInputManager`, `WaylandSeatInputs`, ...).
+- Disassemble 32-bit ARM code on macOS with Xcode's `llvm-objdump`:
+
+  ```bash
+  OD=$(xcrun --find llvm-objdump)
+  $OD -T --demangle lib.so | grep 'Class::method'          # find the address and size
+  $OD -d --triple=thumbv7-linux-gnueabihf --demangle --start-address=0x... --stop-address=0x... lib.so
+  ```
+
+- The compositor is `surface-manager` (LSM): `/usr/lib/libWebOSCoreCompositor.so`,
+  `/usr/lib/libQt5WaylandCompositor.so.5.12.4`, plugins in `/usr/lib/plugins/compositor*`, QML in
+  `/usr/lib/qml/WebOSCompositor` and `WebOSCompositorBase`. webOS OSE's open source versions are close:
+  `webosose/luna-surfacemanager`, and the protocol XML files in `webosose/webos-wayland-extensions`.
+- LG's SDL2 (`/usr/lib/libSDL2-2.0.so.0`) is a working reference for what a native webOS client does.
+- Kodi's webOS windowing code (`xbmc/windowing/wayland/*WebOS*` in `xbmc/xbmc`) is another reference.
+
+### Testing LG's stock template
+
+To check whether a problem is Plezy's or LG's, build a stock app in the VM, outside this checkout:
+
+```bash
+flutter-webos create --platforms webos --project-name plezy --org com.edde746 -e plezy
+```
+
+Project name `plezy` and app id `com.edde746.plezy` (set in `webos/meta/appinfo.json`) let
+`scripts/webos/build_32bit_ipk.sh` patch it unchanged: copy that script and `env.sh` into the test
+project's `scripts/webos/`, run `flutter-webos build webos --release`, then the script. Installing it
+replaces Plezy on the TV (version `1.0.0`, Glasshouse shows `direction: down`); reinstall Plezy after.
+
+### Other dead ends
+
+- `luna-send` over SSH also fails silently for `com.webos.service.capture/executeOneShot`, so screen
+  captures are not available this way.
