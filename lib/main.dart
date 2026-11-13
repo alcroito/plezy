@@ -207,6 +207,7 @@ bool _canAppHandleBackInternally() {
   if (OverlaySheetController.openSheetCount.value > 0) return true;
   if (rootNavigatorKey.currentState?.canPop() ?? false) return true;
   if (_findDeepestPoppableNavigator() != null) return true;
+  if (WebosMainBackHandler.canHandle?.call() ?? false) return true;
   return false;
 }
 
@@ -243,6 +244,12 @@ Future<bool> _triggerInternalWebosBack() async {
   if (poppable != null) {
     BackKeyCoordinator.markHandled();
     await poppable.maybePop();
+    return true;
+  }
+
+  if (WebosMainBackHandler.canHandle?.call() ?? false) {
+    BackKeyCoordinator.markHandled();
+    WebosMainBackHandler.handle?.call();
     return true;
   }
 

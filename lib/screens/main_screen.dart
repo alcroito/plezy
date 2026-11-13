@@ -545,6 +545,11 @@ class _MainScreenState extends State<MainScreen>
     WidgetsBinding.instance.addObserver(this);
     _contentFocusScope.addListener(_syncSidebarFocusWithContent);
 
+    if (Platform.isLinux) {
+      WebosMainBackHandler.canHandle = _webosCanHandleBack;
+      WebosMainBackHandler.handle = _webosHandleBack;
+    }
+
     if (PlatformDetector.isDesktopOS()) {
       windowManager.addListener(this);
       windowManager.setPreventClose(true);
@@ -1058,6 +1063,10 @@ class _MainScreenState extends State<MainScreen>
   void dispose() {
     if (_watchTogether?.navigatorOpener == _navigateToWatchTogetherMedia) _watchTogether?.navigatorOpener = null;
     WidgetsBinding.instance.removeObserver(this);
+    if (WebosMainBackHandler.handle == _webosHandleBack) {
+      WebosMainBackHandler.canHandle = null;
+      WebosMainBackHandler.handle = null;
+    }
     _profileRouteObserver?.unsubscribe(this);
     if (PlatformDetector.isDesktopOS()) {
       windowManager.removeListener(this);
@@ -1553,6 +1562,25 @@ class _MainScreenState extends State<MainScreen>
     _lastBackPressAt = now;
     showMainSnackBar(t.common.pressBackAgainToExit, duration: _backExitWindow);
     return KeyEventResult.handled;
+  }
+
+  // At the home tab with the sidebar focused, Back is left to webOS, which
+  // shows its own exit prompt.
+  bool _webosCanHandleBack() {
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return false;
+    if (!PlatformDetector.shouldUseSideNavigation(context)) return false;
+    final tabs = _getVisibleTabs(_isOffline);
+    if (tabs.isEmpty) return false;
+    return !_isSidebarFocused || _currentTab != tabs.first.id;
+  }
+
+  void _webosHandleBack() {
+    if (!mounted) return;
+    if (!_isSidebarFocused) {
+      _focusSidebar();
+      return;
+    }
+    _handleMainBack();
   }
 
   KeyEventResult _handleMainBackKeyAction(KeyEvent event) {

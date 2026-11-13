@@ -66,6 +66,13 @@ class BackKeyCoordinator {
   }
 }
 
+/// Lets the webOS back hooks in main.dart route Back into MainScreen's own
+/// chain (content -> sidebar -> home tab) when no navigator can pop.
+class WebosMainBackHandler {
+  static bool Function()? canHandle;
+  static VoidCallback? handle;
+}
+
 /// Consumes KeyDown/KeyRepeat to avoid duplicate actions, runs [onBack] on KeyUp.
 KeyEventResult handleBackKeyAction(KeyEvent event, VoidCallback onBack) {
   if (!event.logicalKey.isBackKey) return KeyEventResult.ignored;
