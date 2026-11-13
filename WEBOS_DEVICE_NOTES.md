@@ -196,10 +196,12 @@ Found by disassembling `AddPointer` and `GetDefaultSeatInfo` (see "Reading LG's 
 
 ### Fix (runner, no change to LG's binaries)
 
-`webos/runner/webos_pointer_seats.cc` defines `wl_proxy_add_listener` in the runner executable, and
-`webos/runner/user_build.cmake` exports it (`-Wl,--export-dynamic-symbol=wl_proxy_add_listener`).
-Because the executable comes first in symbol lookup, the embedder's calls reach this function
-instead of libwayland-client's:
+`webos/runner/webos_pointer_seats.cc` defines two libwayland-client functions in the runner
+executable, and `webos/runner/user_build.cmake` exports them
+(`-Wl,--export-dynamic-symbol=...`). Because the executable comes first in symbol lookup, the
+embedder's calls reach these instead of libwayland-client's.
+
+`wl_proxy_add_listener` (the seat fix):
 
 - It records every `wl_seat` the embedder attaches a listener to.
 - When the embedder attaches its pointer listener (once, to the default seat's pointer), it leaves
@@ -207,13 +209,34 @@ instead of libwayland-client's:
   attaches the embedder's listener and data to each. Every seat delivers pointer events, none twice.
 - Seats bound later get a pointer immediately. If the embedder attaches a different listener or
   data (window recreated), the old pointers are released and new ones created.
-- Everything else is forwarded to the real `wl_proxy_add_listener` (`dlsym(RTLD_NEXT, ...)`).
+- Everything else is forwarded to the real function (`dlsym(RTLD_NEXT, ...)`).
 
-Verified on the G4 (webOS 24 package): clicks injected through Glasshouse arrive in Flutter as
-`PointerDownEvent`/`PointerUpEvent` (kind `mouse`), and manual hover and clicks with the Magic Remote
-worked. Not tested: the webOS 25-26 package (no webOS 26 TV available). Known limitation: if the
-compositor removes a seat at runtime, the recorded seat pointer is stale; it is only used again if
-the embedder attaches a new pointer listener.
+`wl_proxy_marshal_flags` (drops `wl_pointer.set_cursor`):
+
+- On pointer enter the embedder sends `wl_pointer.set_cursor` with its own cursor surface, even with
+  `use_mouse_cursor` off (embedder log `wayland_cursor.cc ... setDefaultCursor`). LSM then logs
+  `WebOSSurfaceItem::setCursorSurface` and draws the app's surface instead of the system cursor.
+  The override drops that request, so the TV's own cursor stays. Plezy cannot change the cursor
+  shape as a result.
+- All other requests are forwarded to the next `wl_proxy_marshal_flags` (the webOS 6-24 shim's, then
+  libwayland's). The variadic arguments are read back using the request's signature from the
+  proxy's `wl_interface` (each argument fits a `uintptr_t`) and passed on explicitly.
+- Dropping `set_cursor` did not fix the cursor lag (section 9); it is kept to keep the system cursor,
+  following Kodi's webOS port.
+
+Verified on the G4 (webOS 24 package):
+
+- Clicks injected through Glasshouse arrive in Flutter as `PointerDownEvent`/`PointerUpEvent`
+  (kind `mouse`); manual hover and clicks with the Magic Remote worked.
+- Positions are correct: Flutter receives screen coordinates x 1.5 (its 2880x1620 view at device
+  pixel ratio 1.5), for example LSM `554,76` -> Flutter `831,114`, `1424,1062` -> `2136,1593`. LSM's
+  `geometry=-480,-270 2880x1620` is the item before its scale transform.
+- The Magic Remote and Glasshouse's network input use different seats, each with its own position.
+  Both now reach Flutter as device 0, so using both at once makes the pointer jump between them.
+
+Not tested: the webOS 25-26 package (no webOS 26 TV available). Known limitation: if the compositor
+removes a seat at runtime, the recorded seat is stale; it is only used again if the embedder attaches
+a new pointer listener.
 
 ### Ruled out on the way
 
@@ -222,7 +245,7 @@ the embedder attaches a new pointer listener.
 - **`use_mouse_cursor`.** LG's runner template hard-codes `UseMouseCursor()` to `false`
   (`runner_base/flutter_embedder_options.h`). Setting `vp.use_mouse_cursor = true` changed nothing;
   in Sony-derived embedders it only controls the cursor image. Kodi's webOS port notes that
-  `wl_pointer.set_cursor` "completely breaks pointer input" on webOS, so leave it off.
+  `wl_pointer.set_cursor` "completely breaks pointer input" on webOS; leave it off.
 - **The 1.5x scale.** With `force_scale_factor` the surface is 2880x1620 and LSM places its item at
   `-480,-270` (centered on the 1920x1080 output). With the scale disabled (1920x1080 at `0,0`) clicks
   still did not arrive.
@@ -245,7 +268,48 @@ the embedder attaches a new pointer listener.
   the client side.
 - The cursor show/hide keys (1198/1199) do reach the app as `wl_keyboard.key` on a device seat.
 
-## 9. Debugging techniques
+## 9. Cursor lag: compositor stalls (open issue)
+
+**Symptom.** Showing the Magic Remote cursor (one wheel tick) makes everything lag, key presses
+included, until the cursor hides; it repeats on the next wheel tick.
+
+**Findings (verified on the G4):**
+
+- The compositor (`surface-manager`, LSM) stalls. Its input thread logs each key on time
+  (`IM IM_KEY_INPUT`), but its main thread processes them (`QPA_KEY_INPUT`) seconds later, in batches.
+  Frame callbacks to the app come only every ~1.7 s or ~5.2 s during the stall (LSM's own timestamps
+  in `wl_callback.done`), then everything recovers.
+- During the stall LSM uses no CPU, is in state `S` (not `D`), and swap-in and I/O wait are near
+  zero. It looks like waiting on a timeout; what it waits for is not known.
+- **It does not depend on Plezy.** A scripted reproduction (section 11) stalls with: Plezy with the
+  pointer fix, Plezy without it (HEAD runner), Plezy with the 1.5x scale off (1920x1080 surface), and
+  the Homebrew Channel web app with Plezy closed (key delays up to 3.8-4.9 s).
+- Ruled out: `wl_pointer.set_cursor` (dropped, still lags), the 1.5x scale, Plezy's Dart UI thread
+  (at most ~18% of a core during the lag), memory and swap (see above), and anything injected into
+  `surface-manager` (only LG's own `LD_PRELOAD=/usr/lib/libsystrim.so.3`).
+
+**Not yet known:** whether it happens with the real Magic Remote in other apps (only seen in Plezy
+by hand; the scripted runs use Glasshouse's network pointer), and whether Glasshouse (running as
+root, using the network-input pointer) is involved. Next checks: wheel tick plus D-pad keys in
+another app with the real remote; then the same with Glasshouse stopped
+(`/var/lib/tvweb/tvwebctl stop`).
+
+## 10. Memory on the TV
+
+The G4 has about 2 GB of RAM and 600 MB of swap. With Plezy running, free memory was 30-50 MB and
+swap 450-550 MB used.
+
+- **Plezy's image cache.** `_installWebosBackAndNavigationHooks` in `lib/main.dart` raises Flutter's
+  image cache to 2500 images and 250 MB (Flutter's defaults: 1000 and 100 MB; set in the port's first
+  commit `5a51420b2`). Decoded images live in GPU memory: the Mali driver showed one context of
+  ~258 MB for Plezy once the cache was full, mapped as file-backed memory (`RssFile` ~310 MB of a
+  ~400 MB RSS). GPU memory cannot be swapped, so it pushes other processes into swap. Lowering the
+  cap was tried (100 MB) but did not change the cursor lag; the cap is unchanged.
+- **Media pipeline left running.** A click that opened playback, followed by Back while the video was
+  still opening (`[WebOS-NDL] Opening` then `Created textureId` after the Back key, no close logged),
+  left a `starfish-media-pipeline` process running until Plezy exited. Not investigated further.
+
+## 11. Debugging techniques
 
 ### Wayland protocol trace
 
@@ -266,7 +330,14 @@ sed -E "s/^\[[^]]*\]\[pid:[0-9]+\]\[tid:[^]]*\] *//" $f |
   grep -oE "^(-> )?[a-z_]+@[0-9]+\.[a-z_]+" | sed -E "s/@[0-9]+//" | sort | uniq -c | sort -rn'
 ```
 
-Events for objects without a listener are not printed.
+Events for objects without a listener are not printed. The file name uses the process name
+(`plezy`), so Plezy and LG's template app (also named `plezy` in tests) share the pattern.
+
+Reading frame timing from the trace: `wl_callback.done(<ms>)` carries the compositor's timestamp.
+LG's embedder dispatches frame callbacks on its raster thread's queue, which it only reads when it
+renders the next frame, so the trace's own time for a `done` can be much later than the compositor
+sent it. Compare the `done` arguments, not the trace times. The embedder also commits a new frame
+after about 1 s without a frame callback.
 
 ### Injecting pointer input through Glasshouse
 
@@ -281,7 +352,41 @@ curl -X POST -H 'Content-Type: application/json' -d '{"click":true}' $GH/api/poi
 
 Moves are relative, so the absolute position is unknown; read it from the LSM log line
 `mouseEventCallback key= 272 x= .. y= ..`. Body fields: `move` (up to 120 `{dx, dy, down}`), `click`,
-`down`, `up`, `scroll`.
+`down`, `up`, `scroll`. A `scroll` shows the cursor like a wheel tick.
+
+Remote keys (what the Glasshouse web UI's D-pad sends):
+
+```bash
+curl -X POST -H 'Content-Type: application/json' -d '{"action":"rcu","value":"right"}' $GH/api/control
+```
+
+Values include `up`, `down`, `left`, `right`, `ok`, `back`, `home`, `settings`.
+
+### Scripted reproduction of the cursor lag
+
+1. Three `rcu` `right` presses about 0.8 s apart (baseline).
+2. One pointer `scroll` and a few small `move`s (cursor shows).
+3. Five `right` presses, wait 15 s, three `left` presses.
+
+Then measure the stall from LSM's log, which works for any app in front: for each key press, the
+time from `IM IM_KEY_INPUT {..."key_code":106,"key_value":1...}` (input thread) to the next
+`QPA_KEY_INPUT name= "Right" , state= "pressed"` (main thread). It is 0.00 s normally and 1-5 s during
+a stall. With a Wayland trace, gaps over 0.5 s between consecutive `wl_callback.done` timestamps
+while the app is committing frames show the same stall.
+
+The TV's clock can be off from the Mac's (43 s here): take start times from `ssh root@$TV date -u`.
+The log rotates every few minutes; read `/var/log/messages.0.gz` too.
+
+### CPU, memory and GPU measurements
+
+- Per-thread CPU of the app: ticks (1/100 s) in `/proc/<pid>/task/*/stat` fields 14+15, with names in
+  `comm` (`io.flutter.ui` is Dart, `io.flutter.rast*` the raster thread).
+- `ps ... | grep "[c]om.edde746.plezy/plezy"` finds the app; `pgrep -f` also matches the SSH shell
+  running the command.
+- GPU memory per Mali context, in 4 KB pages: `/sys/kernel/debug/mali0/gpu_memory`; contexts are
+  listed by PID in `/sys/kernel/debug/mali0/ctx/`. The utilization counters there read 0.
+- Swap and I/O wait: `vmstat 1`; process state and swap: `/proc/<pid>/stat` field 3,
+  `/proc/<pid>/status` `VmSwap`, `RssFile`.
 
 ### The app jail
 
