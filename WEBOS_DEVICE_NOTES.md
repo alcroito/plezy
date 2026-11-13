@@ -221,8 +221,8 @@ embedder's calls reach these instead of libwayland-client's.
 - All other requests are forwarded to the next `wl_proxy_marshal_flags` (the webOS 6-24 shim's, then
   libwayland's). The variadic arguments are read back using the request's signature from the
   proxy's `wl_interface` (each argument fits a `uintptr_t`) and passed on explicitly.
-- Dropping `set_cursor` did not fix the cursor lag (section 9); it is kept to keep the system cursor,
-  following Kodi's webOS port.
+- Dropping `set_cursor` is not needed for performance (the cursor lag in section 9 had another
+  cause); it is kept so the TV's own cursor stays, following Kodi's webOS port.
 
 Verified on the G4 (webOS 24 package):
 
@@ -268,31 +268,40 @@ a new pointer listener.
   the client side.
 - The cursor show/hide keys (1198/1199) do reach the app as `wl_keyboard.key` on a device seat.
 
-## 9. Cursor lag: compositor stalls (open issue)
+## 9. Cursor lag: TV graphics engine failure (fixed by a reboot)
 
-**Symptom.** Showing the Magic Remote cursor (one wheel tick) makes everything lag, key presses
-included, until the cursor hides; it repeats on the next wheel tick.
+**Symptom.** Showing the Magic Remote cursor (one wheel tick) made everything lag, key presses
+included, until the cursor hid; it repeated on the next wheel tick. After a full reboot of the TV
+the pointer works without lag.
 
-**Findings (verified on the G4):**
+**Likely cause:** the TV's 2D graphics engine had failed at the kernel level. Found in a separate
+session investigating broken screenshots: `dmesg` had 304 `gfx sync timeout` errors and
+`crtical error !! GFX recovery failed !!` (LG's spelling), from the capture service, `gal_renderd`
+and `surface-manager`, which also logged `gfx_draw_manual_blend: wait gfx sync error`. The capture
+service hung on every request. After a full reboot `dmesg` had no such errors, and both screenshots
+and the cursor worked again. The kernel log from the lag sessions was already rotated away, so the
+link is inferred from matching symptoms, not proven, and what broke the engine is unknown.
 
-- The compositor (`surface-manager`, LSM) stalls. Its input thread logs each key on time
-  (`IM IM_KEY_INPUT`), but its main thread processes them (`QPA_KEY_INPUT`) seconds later, in batches.
-  Frame callbacks to the app come only every ~1.7 s or ~5.2 s during the stall (LSM's own timestamps
-  in `wl_callback.done`), then everything recovers.
-- During the stall LSM uses no CPU, is in state `S` (not `D`), and swap-in and I/O wait are near
-  zero. It looks like waiting on a timeout; what it waits for is not known.
-- **It does not depend on Plezy.** A scripted reproduction (section 11) stalls with: Plezy with the
-  pointer fix, Plezy without it (HEAD runner), Plezy with the 1.5x scale off (1920x1080 surface), and
-  the Homebrew Channel web app with Plezy closed (key delays up to 3.8-4.9 s).
-- Ruled out: `wl_pointer.set_cursor` (dropped, still lags), the 1.5x scale, Plezy's Dart UI thread
-  (at most ~18% of a core during the lag), memory and swap (see above), and anything injected into
-  `surface-manager` (only LG's own `LD_PRELOAD=/usr/lib/libsystrim.so.3`).
+**What was measured during the lag (it matches a compositor waiting on the graphics engine):**
 
-**Not yet known:** whether it happens with the real Magic Remote in other apps (only seen in Plezy
-by hand; the scripted runs use Glasshouse's network pointer), and whether Glasshouse (running as
-root, using the network-input pointer) is involved. Next checks: wheel tick plus D-pad keys in
-another app with the real remote; then the same with Glasshouse stopped
-(`/var/lib/tvweb/tvwebctl stop`).
+- The compositor (`surface-manager`, LSM) stalled. Its input thread logged each key on time
+  (`IM IM_KEY_INPUT`), but its main thread processed them (`QPA_KEY_INPUT`) seconds later, in
+  batches. Frame callbacks to the app came only every ~1.7 s or ~5.2 s (LSM's own timestamps in
+  `wl_callback.done`), then everything recovered.
+- During the stall LSM used no CPU and was in state `S` (not `D`), with near-zero swap-in and I/O
+  wait: waiting on a timeout, consistent with the `gfx sync` waits.
+- It only happened while the cursor was shown. That drawing the cursor uses the failing 2D engine
+  (a blend, matching `gfx_draw_manual_blend`) is an assumption, not verified.
+- It did not depend on Plezy: a scripted reproduction (section 11) stalled with Plezy with and
+  without the pointer fix, with the 1.5x scale off, and with the Homebrew Channel web app in front
+  and Plezy closed (key delays up to 3.8-4.9 s).
+- Ruled out at the time: `wl_pointer.set_cursor`, the 1.5x scale, Plezy's Dart UI thread (at most
+  ~18% of a core), memory and swap, and anything injected into `surface-manager` (only LG's own
+  `LD_PRELOAD=/usr/lib/libsystrim.so.3`).
+
+**If it comes back:** reboot fully (`reboot` as root, or unplug for 30 s; standby does not reset the
+driver), and check `dmesg | grep "gfx sync timeout"` soon after the lag starts to see what triggered
+it. Screenshots hanging (`com.webos.service.capture` not replying) are an early sign.
 
 ## 10. Memory on the TV
 
@@ -303,8 +312,8 @@ swap 450-550 MB used.
   image cache to 2500 images and 250 MB (Flutter's defaults: 1000 and 100 MB; set in the port's first
   commit `5a51420b2`). Decoded images live in GPU memory: the Mali driver showed one context of
   ~258 MB for Plezy once the cache was full, mapped as file-backed memory (`RssFile` ~310 MB of a
-  ~400 MB RSS). GPU memory cannot be swapped, so it pushes other processes into swap. Lowering the
-  cap was tried (100 MB) but did not change the cursor lag; the cap is unchanged.
+  ~400 MB RSS). GPU memory cannot be swapped, so it pushes other processes into swap. A 100 MB cap
+  was tried during the cursor lag (section 9) and did not change it; the cap is unchanged.
 - **Media pipeline left running.** A click that opened playback, followed by Back while the video was
   still opening (`[WebOS-NDL] Opening` then `Created textureId` after the Back key, no close logged),
   left a `starfish-media-pipeline` process running until Plezy exited. Not investigated further.
@@ -428,5 +437,7 @@ replaces Plezy on the TV (version `1.0.0`, Glasshouse shows `direction: down`); 
 
 ### Other dead ends
 
-- `luna-send` over SSH also fails silently for `com.webos.service.capture/executeOneShot`, so screen
-  captures are not available this way.
+- Screen captures: `com.webos.service.capture/executeOneShot` (`DISPLAY`, `PNG`) gave no reply here
+  because the capture service was hung by the graphics engine failure (section 9), not because of
+  `luna-send` over SSH. After a reboot it worked in a separate session (960x540 unless `width` and
+  `height` are given). Use `luna-send -w <ms>` so a hung service times out instead of waiting.

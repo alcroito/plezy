@@ -23,7 +23,7 @@ hardware video through LG's `NDL_media` and a custom subtitle engine.
 | `BUILD_WEBOS.md` | Author's build guide, toolchain versions, vendored dependencies |
 | `WEBOS_CI.md` | CI workflow, `scripts/webos/ci/*`, cache, releases, Homebrew Channel format |
 | `WEBOS_COMPAT_PATCHING.md` | Why the webOS 6-24 package exists, what the patching does, risks |
-| `WEBOS_DEVICE_NOTES.md` | TV access (SSH, Glasshouse), logs, install loop, gotchas, Magic Remote fix, cursor lag, memory, debugging techniques (Wayland trace, pointer and key injection, stall measurement, reading LG binaries) |
+| `WEBOS_DEVICE_NOTES.md` | TV access (SSH, Glasshouse), logs, install loop, gotchas, Magic Remote fix, cursor lag (graphics engine failure), memory, debugging techniques (Wayland trace, pointer and key injection, stall measurement, reading LG binaries) |
 | `CLAUDE.local.md` | Local only (not committed): TV address, checkout path, VM setup; may not exist |
 
 ## Key facts
@@ -98,8 +98,9 @@ in `WEBOS_DEVICE_NOTES.md`. `luna-send` over SSH does not launch apps on the tes
 
 - Magic Remote pointer: LG's embedder handles pointer input on one Wayland seat only; the runner
   works around it (`WEBOS_DEVICE_NOTES.md` section 8). Not tested on webOS 25-26.
-- Showing the Magic Remote cursor makes the compositor stall for seconds at a time, also with Plezy
-  closed; cause unknown (`WEBOS_DEVICE_NOTES.md` section 9).
+- If showing the Magic Remote cursor makes the whole TV lag, or screenshots hang, check `dmesg` for
+  `gfx sync timeout`: the TV's graphics engine has failed and only a full reboot fixes it
+  (`WEBOS_DEVICE_NOTES.md` section 9). Not caused by Plezy.
 - Memory is tight on the test TV; Plezy's 250 MB image cache lives in GPU memory
   (`WEBOS_DEVICE_NOTES.md` section 10).
 - The patched package stores app data (including the Plex token) in a world-writable folder; see
