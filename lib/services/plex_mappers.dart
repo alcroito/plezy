@@ -318,6 +318,9 @@ class PlexRatingDto {
 class PlexMediaVersionDto {
   @JsonKey(fromJson: flexibleIntOrZero)
   final int id;
+  // Plex Media Server leaves `title` empty for plain files; servers such as ether set a release title.
+  @JsonKey(readValue: readStringField)
+  final String? title;
   @JsonKey(readValue: readStringField)
   final String? videoResolution;
   @JsonKey(readValue: readStringField)
@@ -341,6 +344,7 @@ class PlexMediaVersionDto {
 
   const PlexMediaVersionDto({
     required this.id,
+    this.title,
     this.videoResolution,
     this.videoCodec,
     this.bitrate,
@@ -1210,8 +1214,10 @@ class PlexMappers {
             ),
           ]
         : dto.parts;
+    final title = dto.title?.trim();
     return MediaVersion(
       id: dto.id.toString(),
+      name: title == null || title.isEmpty ? null : title,
       width: dto.width,
       height: dto.height,
       videoResolution: dto.videoResolution,

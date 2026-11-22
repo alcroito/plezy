@@ -36,9 +36,10 @@ class MediaVersion {
   final List<MediaPart> parts;
 
   /// Human-readable name for this version (e.g. "Director's Cut").
-  /// Plex doesn't surface a name on `Media` entries, so this is null on the
-  /// Plex path and set from `MediaSource.Name` on the Jellyfin path when the
-  /// names differ across sources.
+  /// On the Plex path it comes from the `Media` entry's `title`, which Plex
+  /// Media Server leaves empty for plain files but servers such as ether set to
+  /// a release title; on the Jellyfin path it comes from `MediaSource.Name`
+  /// when the names differ across sources.
   final String? name;
 
   const MediaVersion({

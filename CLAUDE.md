@@ -73,7 +73,7 @@ build cannot run on macOS directly.
 Upstream checks from `CONTRIBUTING.md` (`dart format`, `flutter analyze`, `scripts/run_tests.sh`,
 `scripts/codegen.sh`) are written for upstream's Flutter. On this branch the code generators
 (`build_runner`, `freezed`, `json_serializable`, `drift_dev`, `slang_build_runner`) are commented out
-in `pubspec.yaml`, so `scripts/codegen.sh` does not run; generated files are committed.
+in `pubspec.yaml`, so `scripts/codegen.sh` does not run; generated files are committed. When a `@JsonSerializable` class changes, edit its `*.g.dart` by hand to match (e.g. `PlexMediaVersionDto.title` in `lib/services/plex_mappers.g.dart`).
 
 ## Testing on the TV
 

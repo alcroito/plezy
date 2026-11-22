@@ -127,6 +127,19 @@ void main() {
     });
   });
 
+  group('Plex media version title', () {
+    test('Media title becomes the version name and prefixes the label', () {
+      final v = PlexMappers.mediaVersionFromJson({..._media(), 'title': '4K Dolby Vision WEB-DL · 6.9 GB'});
+      expect(v.name, '4K Dolby Vision WEB-DL · 6.9 GB');
+      expect(v.displayLabel, startsWith('4K Dolby Vision WEB-DL · 6.9 GB · 1080p '));
+    });
+
+    test('missing or blank title leaves the name unset', () {
+      expect(PlexMappers.mediaVersionFromJson(_media()).name, isNull);
+      expect(PlexMappers.mediaVersionFromJson({..._media(), 'title': '  '}).name, isNull);
+    });
+  });
+
   group('MediaVersion displayLabel', () {
     test('formats Plex videoResolution for display', () {
       String displayLabel(String resolution) =>

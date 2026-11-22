@@ -26,6 +26,7 @@ PlexRatingDto _$PlexRatingDtoFromJson(Map<String, dynamic> json) =>
 PlexMediaVersionDto _$PlexMediaVersionDtoFromJson(Map<String, dynamic> json) =>
     PlexMediaVersionDto(
       id: flexibleIntOrZero(json['id']),
+      title: readStringField(json, 'title') as String?,
       videoResolution: readStringField(json, 'videoResolution') as String?,
       videoCodec: readStringField(json, 'videoCodec') as String?,
       bitrate: flexibleInt(json['bitrate']),
