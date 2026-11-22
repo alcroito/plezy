@@ -12,7 +12,7 @@ and publish them for the webOS Homebrew Channel. See `BUILD_WEBOS.md` for the ma
 | `scripts/webos/ci/setup-toolchain.sh` | Installs the toolchain on Ubuntu x86_64; safe to re-run |
 | `scripts/webos/ci/build.sh` | Builds both IPKs into `dist/` |
 | `scripts/webos/ci/make_homebrew_repo.py` | Writes a Homebrew Channel manifest and repository file per IPK |
-| `scripts/webos/ci/publish.sh` | Generates those files and creates the GitHub release |
+| `scripts/webos/ci/publish.sh` | Generates those files and creates the GitHub release, or updates an existing one |
 | `scripts/webos/env.sh` | Environment for `flutter-webos` and the NDK (sourced by `build.sh`) |
 | `scripts/webos/build_32bit_ipk.sh` | Produces the webOS 6-24 IPK from the unpatched one |
 
@@ -114,6 +114,13 @@ git push <remote> v2.26.0-webos.2
 | `com.edde746.plezy_<ver>_arm_webos6-24.ipk` | Patched package (webOS 24, likely webOS 25) |
 | `plezy-<variant>.manifest.json` | Homebrew Channel manifest per package |
 | `plezy-<variant>.repo.json` | Homebrew Channel repository per package |
+
+If the release already exists (a re-run job, or a tag moved and pushed again), `publish.sh` keeps it
+and replaces the files with `gh release upload --clobber`, one call per package with its IPK,
+manifest and repository file, then refreshes the notes. The release is never deleted, so the
+`releases/latest` URLs keep working. A rebuild changes the IPK hashes, so between an IPK and its
+manifest being replaced a client can briefly see a mismatch and reject that install. Assets from an
+earlier upload whose names no longer match (for example after a version change) are not removed.
 
 The release notes list the repository and manifest URL for each package, in the form:
 
