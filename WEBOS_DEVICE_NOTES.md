@@ -491,3 +491,79 @@ Only `RIGHT` was tried as a button name; other names presumably follow the same 
 
 The screenshot hangs with no reply if the capture service is stuck, as during the graphics engine
 failure in section 9; that is a TV problem, not `luna-send`.
+
+## 12. Dolby Vision on webOS 24: why Plezy plays the HDR10 layer
+
+**Symptom.** On the test TV (webOS 9.2.0), a Dolby Vision profile 8 file plays in HDR10 in Plezy,
+while plx-native plays the same title in Dolby Vision. The file was a 2160p AMZN WEB-DL MKV (HEVC,
+Dolby Vision profile 8 with an HDR10 base layer, HDR10+), served by an ether (Plex-compatible)
+server. Plezy's log shows a direct play (`[WebOS-NDL] Opening ... isHls=false`), with no 702 error
+and no switch to HLS.
+
+**Cause (from plx-native's firmware analysis, not measured with Plezy).** Plezy hands the file URL to
+LG's player (`NDL_MediaLoadWithOption`), so the TV's own GStreamer demuxers read the file. LG's
+`matroskademux` recognizes the Dolby Vision configuration (`dvcC`/`dvvC`) only from webOS 10.3; on
+9.2.4 it skips it, so an MKV plays its HDR10 base layer. The TV's `qtdemux` (MP4) carries Dolby
+Vision on webOS 24, except Profile 7. Sources: plx-native `docs/uri-mode.md` ("Dolby Vision on the
+load") and `matroska_dolby_vision_for()` in `rust-modules/os/src/devcaps.rs`.
+
+**How plx-native does it.** It demuxes with FFmpeg and feeds the elementary streams to LG's pipeline
+(`BUFFERSTREAM` load), adding `option.externalStreamingInfo.contents.DolbyHdrInfo`
+(`{"trackType":"single","encryptionType":"clear","profileId":8}`), which makes the pipeline enable
+Dolby Vision. It also converts Profile 7 (UHD Blu-ray dual layer) to 8.1 while feeding, like
+`dovi_tool -m 2`. See plx-native `docs/dolby-vision.md`.
+
+**Not a fix.** Adding `DolbyHdrInfo` to Plezy's URL load: in URL mode the node only labels the
+stream; plx-native saw a TV switch into Dolby Vision mode over an HDR10 decode.
+
+**Options, none tested:**
+
+1. **Serve MP4 instead of MKV** (LG's MP4 reader handles Dolby Vision on webOS 24). Quick check:
+   `ffmpeg -i in.mkv -map 0 -c copy -strict unofficial out.mp4`, add it to a Plex library, direct-play
+   it in Plezy and look for the Dolby Vision badge.
+2. **Request the server's HLS/DASH (fragmented MP4) for Dolby Vision MKVs on webOS before 10.3.**
+   Plezy already has the code path: the 702 fallback,
+   `WebosDirectStreamFallbackRegistry.obtainDirectStreamUrl()`. Unknown whether LG's adaptive player
+   on webOS 24 shows Dolby Vision from such a stream.
+3. **Remux on the TV** to fragmented MP4 in a local process and play `http://127.0.0.1/...`. Seeking
+   means restarting the remux.
+4. **Feed the stream like plx-native**, with FFmpeg or the TV's own GStreamer `matroskademux` (it
+   ignores the Dolby Vision record but passes the RPU NALs, which live in the HEVC stream; the
+   profile can come from Plex's `DOVIProfile`). Large: timing, seeking and audio are all on the app.
+5. **webOS 26 update**: its MKV reader handles Dolby Vision (Profile 7 still plays as HDR10).
+
+**ether specifics** (ether sources, checked 2026-11-22):
+
+- Plezy matches ether's `htpc` client profile (Dolby Vision 5/7/8, Matroska allowed), so ether
+  offers direct play. Plezy on webOS reports `X-Plex-Product: Plezy`, `X-Plex-Platform: Linux`, the
+  same as desktop Linux Plezy.
+- An owner override (`clients.overrides`: `product: "Plezy"`, `platform: "Linux"`, `containers`
+  without `mkv`, `dolbyVisionProfiles: [5, 8]`, `dolbyVision: true`) makes `Decide()` refuse MKV
+  direct play and copy the video into HLS/DASH fragmented MP4. The copy keeps Dolby Vision (`hvc1`
+  tag plus a `dvcC` box via `-strict unofficial`, `internal/transcode/args.go`).
+- That override alone changes nothing for Plezy on webOS: Plezy reads `/library/metadata` and
+  direct-plays the part URL without calling `/video/:/transcode/universal/decision`, where the
+  capability rules apply. Plezy would have to request the HLS stream itself (option 2).
+- ether's progressive HTTP output is always Matroska (`outputContainer()`), so there is no
+  progressive MP4 remux.
+- For profile 8, ether's HLS playlist declares plain `hvc1` and deliberately omits
+  `SUPPLEMENTAL-CODECS` (`internal/transcode/hls_attributes.go`); LG's player would have to detect
+  Dolby Vision from the `dvcC` box in the segments.
+- ether's metadata for the Auto version omitted `DOVIPresent`/`DOVIProfile` on the tested file, so
+  Plezy cannot yet tell from metadata that a file is Dolby Vision.
+
+## 13. Keeping up with the port author's branch
+
+GLNick deleted `webos-native-working` from `GLNick/plezy-webos`; the active branch is
+`webos-2.26.0`. On 2026-11-22 its new commits were reviewed:
+
+- **Picked** (app fixes, all apply cleanly): `4a4bbc0d3` (ASS `\t()`, baseline, DejaVu Serif fallback
+  registered as "Times New Roman"), `2b0e1a692` (libass parity), `3d8c5c258` (parallel cues stay
+  until `endMs`; hard-codes `isStandardLine = false`), and the `side_navigation_rail.dart` part of
+  `63b3ba5e5` (hide the fullscreen toggle on TV).
+- **Already ours:** five commits are copies of this fork's CI and docs commits.
+- **Skipped** (CI): tag-only `v*` triggers (would fire on upstream version tags), deleting and
+  recreating the release on re-runs (breaks `releases/latest` briefly; replaced here by in-place
+  `gh release upload --clobber`), and release notes that tie the package choice to hardware year and
+  claim webOS 23 support, which the firmware data contradicts (a 2023 model on webOS 26 has
+  glibc 2.38; webOS 23 has glibc 2.31).
