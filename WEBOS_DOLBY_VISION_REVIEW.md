@@ -7,7 +7,8 @@ test TV (LG G4, webOS 9.2). Read-only review, 2026-11-23. The TV was not reachab
 checked on a device. Symbol checks used webosbrew's firmware inventory
 (webosbrew-toolbox-fw-symbols 0.4.0-1, the database plx-native's `tools/fwcompat.py` uses).
 
-Section E lists the fixes made after the review; section B still needs a TV.
+Section E lists the fixes made after the review, section F a second review of those fixes and its
+fixes; section B still needs a TV.
 
 ## A. Found by reading code
 
@@ -88,6 +89,32 @@ building both IPKs; not on a TV.
 | B2 | `setHdrInfo` skipped when Dolby Vision is declared; knob `hdr_info_dv=1` restores it | Test `dv_p81_mp4` |
 
 Not changed: B1, B3-B9 and the rest of A13 need a TV.
+
+## F. Second review (of the fixes in E) and its fixes, 2026-11-23
+
+Read-only review at `a76618764` (tag `v2.26.0-webos.6`), looking for problems the first review did
+not list, including ones the fixes introduced. All items below were fixed; checked in the VM host
+test (14 cases pass, including `open_gop_seek_mp4`) and by building both IPKs, not on a TV.
+
+| # | Severity | Problem | Fix | Checked by |
+| --- | --- | --- | --- | --- |
+| 1 | Likely bug (from A9) | When `open()` of another item or `dispose()` tears down a feed that is still in `initialize()`, `initialize()` now fails at once and Plezy fell back to LG's player for a superseded source, while the plugin was still unloading (decoder clash; on screen close a leaked LG player) | `_openFeed`'s catch returns without fallback when its controller is no longer `_native` | Code review |
+| 2 | Likely bug (from A1) | End of stream less than 1 s after the anchor (start, seek or reload near the end) never started the clock: playback stuck | `StartClock()` at end of stream when not started | Code review (no test media for it) |
+| 3 | Likely bug (A4) | The skipped keyframe's time was truncated to ms, so the backward seek of the rewind (and of a refused-Seek reload) landed one keyframe early on MP4/TS (keyframes between whole ms) | Times rounded up to the next ms | Test `open_gop_seek_mp4` (anchors at 8009 ms, not 6007) |
+| 4 | Minor (A4) | `anchor_rewind` survived a seek or reload, which could jump to 0 | Cleared on seek and reload; rewind needs a stored keyframe | Code review |
+| 5 | Minor (A7) | A reload re-sends `initialized`, and the Dart controller set `playing: true` even when paused | Keeps `playing` once initialized | Code review |
+| 6 | Minor (A7) | A seek before the clock started always reloaded the pipeline, also before anything was fed | Reload only after the first anchor (`!m.initial_start`) | All tests |
+| 7 | Minor (A8) | The re-arm after completion left the base player completed, not seekable, and its source inactive | Re-arm sets seekable, clears `eof-reached`, and stops gating position updates on the old source id | Code review |
+| 8 | Minor | A `pause()` at the moment the priming second completed could be lost | `paused_` and `started_` change under `mutex_`; `StartClock()` checks `paused_` inside the lock | Code review |
+| 9 | Minor | A dispose during a reload loaded a new pipeline first; Plezy waited for dispose with no limit | No Load after `stop_`; Plezy waits at most 8 s | Code review |
+| 10 | Minor | A6's log printed a meaningless PTS | Logs the copy's PTS | |
+| 11 | Minor (A11) | The Jellyfin `Index` change in shared code changed default-track marking on every platform | Reverted; PlayerWebos passes a stream index only when the track id differs from its index (Plex). Jellyfin tracks get none on the feed path: the plugin plays the file's default audio track and audio switching there does nothing | Code review |
+| S1 | Needs TV | 1 s of high-bitrate 4K can exceed the 8 MB source buffer; with BufferFull before priming the clock never started | `StartClock()` on the first BufferFull before priming | Code review (the fake player never answers BufferFull) |
+| S2 | Needs TV | After anchoring on a CRA, its leading (RASL) pictures were fed with PTS before the anchor (clamped to 0 after a start part-way in) | Video AUs with PTS before the CRA anchor are dropped until a later picture | Open-GOP tests |
+
+Found correct by the second review: A3 (plugin side), A5, A6, A10, A12, B2, A2 (no loop), the A9
+controller changes, the anchoring bound (no endless loop), the A7 refused-Seek path, the 32-bit log
+formatting, PTS math, and the stderr redirect.
 
 ## D. TV test order
 

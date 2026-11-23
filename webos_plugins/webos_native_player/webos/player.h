@@ -76,6 +76,8 @@ class Player {
   std::string TracksJson();
   bool ReloadPipeline(int64_t at_ms);
   void UnloadPipeline();
+  // Starts LG's clock (unless paused) once enough is fed, or when no more can be fed.
+  void StartClock(const char* why);
   void FeedLoop();
   bool FeedPacket(const uint8_t* data, int size, int64_t pts_ns, int es);
   void Emit(EventMap event);

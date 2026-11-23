@@ -328,6 +328,7 @@ struct Player::Media {
   int anchor_skips = 0;          // keyframes skipped for the current anchor
   int64_t anchor_skip_ms = -1;   // the first of them, to go back to when no IDR comes
   bool anchor_rewind = false;    // go back to anchor_skip_ms before reading on
+  int64_t leading_cutoff_ns = -1;  // after anchoring on a CRA: drop its leading (RASL) pictures
   AVPacket* to81_copy = nullptr;  // the access unit before conversion, fed without RPU if it fails
   bool to81_annexb_logged = false;
   std::vector<uint8_t> relen;  // an access unit re-prefixed with NAL lengths
@@ -421,17 +422,26 @@ EventMap Player::Status() {
   return s;
 }
 
+// paused_ and started_ change under mutex_, so a pause cannot be lost to the clock starting.
 void Player::Play() {
-  paused_ = false;
   std::lock_guard<std::mutex> lock(mutex_);
-  // Before the priming second is fed, FeedLoop starts the clock itself.
+  paused_ = false;
+  // Before the priming second is fed, StartClock() starts the clock.
   if (pipeline_ && loaded_ && started_) pipeline_->Play();
 }
 
 void Player::Pause() {
-  paused_ = true;
   std::lock_guard<std::mutex> lock(mutex_);
+  paused_ = true;
   if (pipeline_ && loaded_) pipeline_->Pause();
+}
+
+void Player::StartClock(const char* why) {
+  media_->started = true;
+  std::lock_guard<std::mutex> lock(mutex_);
+  started_ = true;
+  if (pipeline_ && loaded_ && !paused_) pipeline_->Play();
+  LOG("clock started: %s", why);
 }
 
 void Player::SeekTo(int64_t ms) { seek_request_ms_ = std::max<int64_t>(0, ms); }
@@ -580,6 +590,7 @@ bool Player::ReloadPipeline(int64_t at_ms) {
   Media& m = *media_;
   LOG("reloading the pipeline at %" PRId64 " ms", at_ms);
   UnloadPipeline();
+  if (stop_) return false;
   av_seek_frame(m.format, -1, m.start_us + at_ms * 1000, AVSEEK_FLAG_BACKWARD);
   if (m.annexb) av_bsf_flush(m.annexb);
   if (m.to81) av_bsf_flush(m.to81);
@@ -590,6 +601,8 @@ bool Player::ReloadPipeline(int64_t at_ms) {
   m.anchor_pending = true;
   m.anchor_skips = 0;
   m.anchor_skip_ms = -1;
+  m.anchor_rewind = false;
+  m.leading_cutoff_ns = -1;
   m.initial_start = true;  // a fresh pipeline: the timeline starts at 0 again, shifted
   m.fresh_start = false;
   m.logged_aus = 0;
@@ -975,6 +988,11 @@ bool Player::FeedPacket(const uint8_t* data, int size, int64_t pts_ns, int es) {
       }
       return true;
     }
+    if (!started_ && reply.find("BufferFull") != std::string::npos) {
+      // A high-bitrate stream can fill the pipeline before the priming second: start the clock
+      // rather than wait forever (plx-native primes only 700 ms).
+      StartClock("pipeline full before the priming second");
+    }
     if (reply.find("BufferFull") == std::string::npos && ++errors > 300) {
       LOG("feed es=%d dropped after %d error replies: %s", es, errors, reply.c_str());
       if (++feed_drops_in_row_ >= 5) {
@@ -1079,9 +1097,10 @@ void Player::FeedLoop() {
             {"subtitleMode", SubtitleMode(is_ass, m.subdec.get())}});
     }
     int64_t seek_ms = seek_request_ms_.exchange(-1);
-    if (seek_ms >= 0 && (speed_permille_ != 1000 || !m.started)) {
+    if (seek_ms >= 0 && (speed_permille_ != 1000 || (!m.started && !m.initial_start))) {
       // At a speed the pipeline's timeline is scaled, and before it plays it refuses Seek: a seek
-      // starts a fresh one.
+      // starts a fresh one. Before the first anchor nothing is fed and the normal path shifts the
+      // timeline without a Seek.
       if (!ReloadPipeline(seek_ms)) break;
       eos = false;
       seek_ms = -1;
@@ -1094,6 +1113,8 @@ void Player::FeedLoop() {
       m.anchor_pending = true;
       m.anchor_skips = 0;
       m.anchor_skip_ms = -1;
+      m.anchor_rewind = false;
+      m.leading_cutoff_ns = -1;
       m.fresh_start = false;
       if (m.transcoder) m.transcoder->Flush();
       eos = false;
@@ -1138,7 +1159,7 @@ void Player::FeedLoop() {
       continue;
     }
 
-    if (m.anchor_rewind) {
+    if (m.anchor_rewind && m.anchor_skip_ms >= 0) {
       // No IDR in time (or before the end): anchor on the first keyframe that was skipped.
       LOG("no IDR after %d keyframes; anchoring at %" PRId64 " ms", m.anchor_skips, m.anchor_skip_ms);
       av_seek_frame(m.format, -1, m.start_us + m.anchor_skip_ms * 1000, AVSEEK_FLAG_BACKWARD);
@@ -1155,6 +1176,7 @@ void Player::FeedLoop() {
       continue;
     }
     if (r == AVERROR_EOF) {
+      if (!m.started) StartClock("end of stream before the priming second");
       pipeline_->pushEOS();
       eos = true;
       LOG("end of stream fed");
@@ -1187,7 +1209,9 @@ void Player::FeedLoop() {
       av_packet_unref(m.to81_copy);
       const bool have_copy = m.to81_copy && av_packet_ref(m.to81_copy, packet) == 0;
       if (av_bsf_send_packet(m.to81, packet) < 0 || av_bsf_receive_packet(m.to81, packet) < 0) {
-        if (m.to81_errors++ < 5) LOG("profile 8.1 conversion failed for a packet (pts %" PRId64 ")", packet->pts);
+        if (m.to81_errors++ < 5) {
+          LOG("profile 8.1 conversion failed for a packet (pts %" PRId64 ")", have_copy ? m.to81_copy->pts : AV_NOPTS_VALUE);
+        }
         av_packet_unref(packet);
         av_bsf_flush(m.to81);
         if (!have_copy) continue;
@@ -1251,7 +1275,8 @@ void Player::FeedLoop() {
               if (vcl != 19 && vcl != 20) {
                 if (m.anchor_skips < kMaxIdrWaitKeyframes) {
                   if (m.non_idr_skipped++ < 3) LOG("start/seek: skipping a keyframe of NAL type %d (waiting for an IDR)", vcl);
-                  if (m.anchor_skips++ == 0) m.anchor_skip_ms = std::max<int64_t>(0, ns / 1000000);
+                  // Rounded up: a backward seek to a truncated time lands on the keyframe before.
+                  if (m.anchor_skips++ == 0) m.anchor_skip_ms = std::max<int64_t>(0, (ns + 999999) / 1000000);
                   if (m.anchor_skips == kMaxIdrWaitKeyframes) m.anchor_rewind = true;
                   av_packet_unref(out);
                   continue;
@@ -1275,7 +1300,7 @@ void Player::FeedLoop() {
               // A refused Seek leaves the pipeline refusing data; plx-native reloads instead.
               LOG("seek to %" PRId64 " ms refused; reloading the pipeline there", anchor_ms);
               av_packet_unref(out);
-              reload_at = anchor_ms;
+              reload_at = std::max<int64_t>(0, (ns + 999999) / 1000000);
               break;
             }
             m.initial_start = false;
@@ -1285,7 +1310,17 @@ void Player::FeedLoop() {
             m.anchor_pending = false;
             m.anchor_skips = 0;
             m.anchor_skip_ms = -1;
+            m.leading_cutoff_ns = m.is_hevc && HevcFirstVclType(out->data, out->size) == 21 ? ns : -1;
             Emit({{"event", "seeked"}, {"position", std::to_string(anchor_ms)}});
+          }
+          if (m.leading_cutoff_ns >= 0) {
+            // Leading pictures of the CRA anchored on come later in decode order but show before it,
+            // and refer to pictures that were never fed.
+            if (ns < m.leading_cutoff_ns) {
+              av_packet_unref(out);
+              continue;
+            }
+            if (ns > m.leading_cutoff_ns) m.leading_cutoff_ns = -1;
           }
           // LG's pipeline rounds fed PTS onto its own frame lattice (to the nearest tick); with the
           // exact PTS of 1001/24000 content the Dolby Vision metadata misses its frame about 2 in
@@ -1330,13 +1365,9 @@ void Player::FeedLoop() {
             if (m.first_fed_ns < 0) m.first_fed_ns = ns;
             // Prime about a second of pictures before the clock starts, as PlxNative does.
             if (!m.started && ns - m.first_fed_ns >= 1000000000LL) {
-              m.started = true;
-              started_ = true;
-              if (!paused_) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                pipeline_->Play();
-              }
-              LOG("primed %.2f s of video; play", (ns - m.first_fed_ns) / 1e9);
+              char why[48];
+              snprintf(why, sizeof why, "primed %.2f s of video", (ns - m.first_fed_ns) / 1e9);
+              StartClock(why);
             }
           }
           release(out);

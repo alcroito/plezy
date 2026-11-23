@@ -199,7 +199,7 @@ class JellyfinFileInfoStreamReader implements FileInfoStreamReader {
     final f = parseJellyfinStreamFields(s, fallbackIndex: autoIndex);
     return MediaAudioTrack(
       id: f.index,
-      index: flexibleInt(s['Index']),
+      index: f.index,
       codec: f.codec,
       language: f.language,
       languageCode: f.languageCode,

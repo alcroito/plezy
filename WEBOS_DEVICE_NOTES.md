@@ -559,7 +559,7 @@ stream; plx-native saw a TV switch into Dolby Vision mode over an HDR10 decode.
 
 ### Option 4 as implemented (verified in the VM only, not on a TV)
 
-Nothing here has run on a TV. The VM host test (`scripts/webos/native_player_host_test.sh`, 13
+Nothing here has run on a TV. The VM host test (`scripts/webos/native_player_host_test.sh`, 14
 cases) checks the plugin against a fake `libplayerAPIs.so.1`, so the Load payload, the fed streams
 and seeking are checked, but not whether the TV shows Dolby Vision.
 

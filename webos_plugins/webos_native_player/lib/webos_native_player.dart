@@ -240,7 +240,7 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
         } on Object catch (_) {}
         value = value.copyWith(
           initialized: true,
-          playing: true,
+          playing: value.initialized ? value.playing : true,
           duration: Duration(milliseconds: int.tryParse(e['duration'] ?? '') ?? 0),
           position: at != null ? Duration(milliseconds: at) : openedAt,
           tracks: tracks,

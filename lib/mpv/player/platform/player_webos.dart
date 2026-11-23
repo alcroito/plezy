@@ -210,6 +210,9 @@ class PlayerWebos extends PlayerBase {
   String? _initialPlexSelectedSubId;
   final Map<String, String?> _subIdToLangCode = {};
 
+  // Jellyfin tracks use id == index and may carry an ordinal fallback, so only Plex indexes are trusted.
+  bool _hasRealStreamIndex(MediaAudioTrack a) => a.index != null && a.id != a.index;
+
   List<Map<String, dynamic>> _buildTrackListEntries(List<SubtitleTrack>? externalSubtitles) {
     _subIdToEmbeddedOrderIndex.clear();
     _subIdToExternalUri.clear();
@@ -232,10 +235,10 @@ class PlayerWebos extends PlayerBase {
         final a = audioTracks[i];
         final tid = 'a_${a.id}';
         _audioIdToOrderIndex[tid] = i;
-        if (a.index != null) _audioIdToStreamIndex[tid] = a.index!;
+        if (_hasRealStreamIndex(a)) _audioIdToStreamIndex[tid] = a.index!;
         if (a.selected && _initialAudioOrderIdx == null) {
           _initialAudioOrderIdx = i;
-          _initialAudioStreamIndex = a.index;
+          _initialAudioStreamIndex = _hasRealStreamIndex(a) ? a.index : null;
           _initialAudioTrackId = tid;
         }
         final langCode = (a.languageCode != null && a.languageCode!.trim().isNotEmpty)
@@ -714,14 +717,16 @@ class PlayerWebos extends PlayerBase {
       await controller.initialize();
     } catch (e) {
       appLogger.w('[WebOS-Feed] Open failed (${controller.value.errorCode ?? 'error'}): $e');
-      if (_native == controller) _native = null;
+      final superseded = _native != controller;
+      if (!superseded) _native = null;
       _feedError = controller.value.error ?? e.toString();
-      await controller.dispose();
+      await _disposeBounded(controller.dispose());
+      if (superseded) return true;
       return false;
     }
     if (disposed || _currentSourceId != sourceId || _native != controller) {
       if (_native == controller) _native = null;
-      await controller.dispose();
+      await _disposeBounded(controller.dispose());
       return true;
     }
 
@@ -758,6 +763,8 @@ class PlayerWebos extends PlayerBase {
     String? lastHdrType;
     var ended = false;
     var completedEnd = false;
+    // end-file clears the base's active source, so after a re-arm the source-gated properties go ungated.
+    int? gatedSourceId = sourceId;
     void onValue() {
       if (disposed || _currentSourceId != sourceId || _native != controller || ended) return;
       final value = controller.value;
@@ -768,13 +775,13 @@ class PlayerWebos extends PlayerBase {
       final positionMs = value.position.inMilliseconds;
       if (positionMs != lastPositionMs) {
         lastPositionMs = positionMs;
-        handlePropertyChange('time-pos', positionMs / 1000.0, sourceId: sourceId);
+        handlePropertyChange('time-pos', positionMs / 1000.0, sourceId: gatedSourceId);
         _refreshActiveSubtitleCues();
       }
       final bufferedMs = value.buffered.inMilliseconds;
       if (bufferedMs != lastBufferedMs && bufferedMs > 0) {
         lastBufferedMs = bufferedMs;
-        handlePropertyChange('demuxer-cache-time', bufferedMs / 1000.0, sourceId: sourceId);
+        handlePropertyChange('demuxer-cache-time', bufferedMs / 1000.0, sourceId: gatedSourceId);
       }
       final hdrType = value.info['hdrType'];
       if (hdrType != null && hdrType != lastHdrType) {
@@ -814,6 +821,9 @@ class PlayerWebos extends PlayerBase {
       if (!completedEnd) return;
       completedEnd = false;
       ended = false;
+      gatedSourceId = null;
+      setSeekable(true);
+      handlePropertyChange('eof-reached', false);
       onValue();
     };
     controller.addListener(onValue);
@@ -1017,6 +1027,11 @@ class PlayerWebos extends PlayerBase {
     } catch (_) {}
   }
 
+  Future<void> _disposeBounded(Future<void> dispose) => dispose.timeout(
+    const Duration(seconds: 8),
+    onTimeout: () => appLogger.w('[WebOS-Feed] Dispose took over 8 s; continuing'),
+  );
+
   Future<void> _teardownActiveTexture() async {
     _positionTimer?.cancel();
     _positionTimer = null;
@@ -1028,7 +1043,7 @@ class PlayerWebos extends PlayerBase {
       _logFeedStatus(native, 'Closing');
       final listener = _nativeListener;
       if (listener != null) native.removeListener(listener);
-      await native.dispose();
+      await _disposeBounded(native.dispose());
     }
     _nativeListener = null;
     _feedRearm = null;

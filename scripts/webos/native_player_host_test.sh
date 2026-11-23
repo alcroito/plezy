@@ -5,7 +5,7 @@
 #
 # Env: WORK (default ~/plezy-webos-workspace/native-player), BASE_URL (default https://localhost:8443).
 # Names: sdr_h264 hdr10 dv_p81_mkv dv_p5_mkv dv_p81_mp4 dv_p7_mel seek start_offset audio_select
-#        dts_to_eac3 http open_gop_seek open_gop_seek_end (default: all). Per-test output goes to $WORK/runs/<name>/.
+#        dts_to_eac3 http open_gop_seek open_gop_seek_end open_gop_seek_mp4 (default: all). Per-test output goes to $WORK/runs/<name>/.
 # Needs: cmake, ninja, libass-dev, python3, curl, dovi_tool, ffprobe/ffmpeg on PATH.
 #
 # Media and the server come from a one-off setup, not created here. Expected in $WORK/media/:
@@ -13,6 +13,10 @@
 #   dv_p7_mel.mkv has DTS audio), sdr_h264.mp4, dv_p81.mp4,
 #   dv_p81_opengop.mkv (12 s at 24 fps, keyframes every 2 s, only the first an IDR, the rest CRA:
 #   x265 keyint=48 open-gop=1 scenecut=0, then dovi_tool inject-rpu of a generated 8.1 RPU, mkvmerge),
+#   dv_p81_opengop_2397.mp4 (its video retimed so keyframes fall between whole milliseconds:
+#   ffmpeg -i dv_p81_opengop.mkv -map 0:v -c copy
+#   -bsf:v "setts=pts=round(PTS*90.111105):dts=round(DTS*90.111105):time_base=1/90000"
+#   -video_track_timescale 90000 -strict unofficial),
 #   ref/dv_p81_rpu.bin ref/dv_p5_rpu.bin ref/dv_p7_mel_m2_rpu.bin (dovi_tool RPU extracts of the sources),
 #   serve.sh (nginx on http://localhost:8080 and https://localhost:8443, started if not answering).
 set -euo pipefail
@@ -24,7 +28,7 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 runs=$WORK/runs
 bin=$WORK/host_test_build/wnp_host_test
 ALL=(sdr_h264 hdr10 dv_p81_mkv dv_p5_mkv dv_p81_mp4 dv_p7_mel seek start_offset audio_select dts_to_eac3 http
-     open_gop_seek open_gop_seek_end)
+     open_gop_seek open_gop_seek_end open_gop_seek_mp4)
 TIMEOUT=300
 
 FF_VER=7.1.1
@@ -243,8 +247,8 @@ t_dts_to_eac3() {
 }
 
 # Dolby Vision without IDR keyframes: the seek must anchor near its target, not read to the end.
-open_gop_check() { # name seek expected-anchor-ms
-  run "$1" dv_p81_opengop.mkv --seek "$2" --until 11500
+open_gop_check() { # name seek expected-anchor-ms [file]
+  run "$1" "${4:-dv_p81_opengop.mkv}" --seek "$2" --until 11500
   check "Seek $3 sent" grep -q "Seek $3\$" "$out/calls.log"
   check "anchored at $3 ms before the end of the stream" python3 -I -c '
 import sys
@@ -255,6 +259,8 @@ sys.exit(0 if a >= 0 and (e < 0 or a < e) else 1)' "$out/player.log" "$3"
 }
 t_open_gop_seek() { open_gop_check open_gop_seek 2000:5000 4000; }
 t_open_gop_seek_end() { open_gop_check open_gop_seek_end 2000:9000 8000; }
+# Keyframe at 8.009878 s: going back must land on it, not on the one before (6.007 s).
+t_open_gop_seek_mp4() { open_gop_check open_gop_seek_mp4 2000:9000 8009 dv_p81_opengop_2397.mp4; }
 
 t_http() {
   run http "$HTTP_URL/dv_p81.mkv"
