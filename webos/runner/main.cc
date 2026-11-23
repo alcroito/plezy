@@ -32,9 +32,9 @@ class App : public FlutterWindow {
   }
 };
 
-// The app's stderr (webos_native_player's [native-player] lines, FFmpeg's messages) is not kept in
-// any known file on the TV, so it is written to appdata/plezy_native.log next to
-// plezy_runtime.log. One previous file is kept as plezy_native.log.1.
+// The app's stdout and stderr (webos_native_player's [native-player] lines, FFmpeg's messages,
+// plugins' print/debugPrint) are not kept in any known file on the TV, so they are written to
+// appdata/plezy_native.log next to plezy_runtime.log. One previous file is kept as plezy_native.log.1.
 static void RedirectStderrToAppLog() {
   char exe[PATH_MAX];
   ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
@@ -56,6 +56,7 @@ static void RedirectStderrToAppLog() {
     close(fd);
     return;
   }
+  if (dup2(fd, STDOUT_FILENO) >= 0) setvbuf(stdout, nullptr, _IOLBF, 0);
   close(fd);
   time_t now = time(nullptr);
   char stamp[32];

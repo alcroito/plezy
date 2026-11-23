@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:video_player_webos/video_player_webos.dart';
 import 'package:webos_native_player/webos_native_player.dart';
+import 'package:webos_service_bridge/webos_service_bridge.dart';
 
 import '../../../media/media_source_info.dart';
 import '../../../utils/app_logger.dart';
@@ -698,6 +699,42 @@ class PlayerWebos extends PlayerBase {
     }
   }
 
+  static Size? _feedScreen;
+
+  /// The coordinate space for the plugin's video window. On the G4 (webOS 24) a 1920x1080 destination
+  /// filled only the top-left quarter, so it is the panel resolution there. `appdata/native_player_window`
+  /// (`WxH`) overrides it for tests on other TVs.
+  static Future<Size> _feedScreenSize() async {
+    final cached = _feedScreen;
+    if (cached != null) return cached;
+    Size size = const Size(3840, 2160);
+    var source = 'default';
+    try {
+      final file = File('${File(Platform.resolvedExecutable).parent.path}/appdata/native_player_window');
+      final match = file.existsSync() ? RegExp(r'^(\d+)x(\d+)$').firstMatch(file.readAsStringSync().trim()) : null;
+      if (match != null) {
+        size = Size(double.parse(match.group(1)!), double.parse(match.group(2)!));
+        source = 'native_player_window';
+      } else {
+        final reply = await WebOSServiceBridge.callOneReply(
+          'luna://com.webos.service.tv.systemproperty/getSystemInfo',
+          payload: {
+            'keys': ['UHD'],
+          },
+        ).timeout(const Duration(seconds: 3));
+        final uhd = reply?['UHD'];
+        if (uhd != null) {
+          size = uhd == 'true' || uhd == true ? const Size(3840, 2160) : const Size(1920, 1080);
+          source = 'getSystemInfo UHD=$uhd';
+        }
+      }
+    } catch (e) {
+      source = 'default ($e)';
+    }
+    appLogger.i('[WebOS-Feed] Video window space ${size.width.toInt()}x${size.height.toInt()} ($source)');
+    return _feedScreen = size;
+  }
+
   /// Plays [uri] through the webos_native_player plugin. False when it could not start, so the
   /// caller opens the TV's own player instead.
   Future<bool> _openFeed({
@@ -711,7 +748,12 @@ class PlayerWebos extends PlayerBase {
     required Duration timelineOffset,
   }) async {
     final trackEntries = _buildTrackListEntries(externalSubtitles);
-    final controller = NativePlayerController(uri, startAt: sourceStart, audioStream: _initialAudioStreamIndex);
+    final controller = NativePlayerController(
+      uri,
+      startAt: sourceStart,
+      audioStream: _initialAudioStreamIndex,
+      screenSize: await _feedScreenSize(),
+    );
     _native = controller;
     try {
       await controller.initialize();

@@ -156,13 +156,18 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
       this.audioStream,
       int? subtitleStream,
       Duration audioDelay = Duration.zero,
-      this.releaseInBackground = true})
+      this.releaseInBackground = true,
+      this.screenSize = const Size(1920, 1080)})
       : _subtitleStream = subtitleStream,
         _audioDelay = audioDelay,
         super(const NativePlayerValue());
 
   final String url;
   final Duration startAt;
+
+  /// The coordinate space of setExportedWindow's destination: 1920x1080 on webOS 6 (LG C1), the
+  /// panel's 3840x2160 with LG's webOS 24 embedder (LG G4).
+  final Size screenSize;
 
   /// FFmpeg stream index of the audio track; null picks the file's default.
   final int? audioStream;
@@ -279,11 +284,20 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
   Future<void> _placeWindow(Size video) async {
     final win = _windowId;
     if (win == null || video.width <= 0 || video.height <= 0 || _disposed) return;
+    // Fit the picture into the screen with its own aspect ratio (a 2.39:1 film is not stretched).
+    final sw = screenSize.width, sh = screenSize.height;
+    var dw = sw, dh = sw * video.height / video.width;
+    if (dh > sh) {
+      dh = sh;
+      dw = sh * video.width / video.height;
+    }
+    final dst = [((sw - dw) / 2).round(), ((sh - dh) / 2).round(), dw.round(), dh.round()];
     final rects = {
       'windowId': win,
       'srcRect': [0, 0, video.width.toInt(), video.height.toInt()],
-      'dstRect': [0, 0, 1920, 1080],
+      'dstRect': dst,
     };
+    debugPrint('webos_native_player: place ${video.width.toInt()}x${video.height.toInt()} -> $dst in $screenSize');
     // setExportedWindow places the plane with the compositor's set_exported_window (source and
     // destination), as LG's SDL does for native apps; 'resize' uses set_crop_region, which leaves
     // 4K buffer-fed video with a colour seam across the middle on webOS 6.
