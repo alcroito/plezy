@@ -63,6 +63,19 @@ ssh root@$TV 'tail -n 50 /media/developer/apps/usr/palm/applications/com.edde746
 Each launch starts with `Startup phase: phase=dart_main`. Lines tagged `[WebOS-Back]` and
 `[WebOS-HWKey]` come from the webOS hooks in `lib/main.dart`.
 
+### Native log (`plezy_native.log`)
+
+The runner (`RedirectStderrToAppLog()` in `webos/runner/main.cc`) points the app's stderr at
+`appdata/plezy_native.log`, next to `plezy_runtime.log`. Each launch starts with
+`[runner] start pid=N`; above 4 MB at startup the file is moved to `plezy_native.log.1` (one previous
+file kept). It holds the `[native-player]` lines of `webos_native_player` (with wall-clock time, to
+match `plezy_runtime.log`), FFmpeg's own messages (HTTP and TLS errors among them) and anything else
+native code prints to stderr. Not yet checked on a TV.
+
+```bash
+ssh root@$TV 'tail -n 100 /media/developer/apps/usr/palm/applications/com.edde746.plezy/appdata/plezy_native.log'
+```
+
 ### System log (`/var/log/messages`)
 
 Useful sources:
@@ -568,9 +581,22 @@ and seeking are checked, but not whether the TV shows Dolby Vision.
   opens. If `libplayerAPIs.so.1` cannot be loaded the error is `player_unavailable`.
 - **Subtitles** still come from Plezy's own engine (`webos_subtitle_engine.dart`), not the plugin's.
   Audio tracks are selected by the server's stream `index`, which equals FFmpeg's stream index.
-- **Logs**: lines prefixed `[WebOS-Feed]` in `plezy_runtime.log`. `[WebOS-Feed] Playing: {...}` is
-  the plugin's info map, including the TV's own `hdrType` (look for `DolbyVision`). The plugin also
-  writes `[native-player]` lines to stderr.
+- **Logs**, `plezy_runtime.log` (`[WebOS-Feed]`):
+  - `Opening sourceId=N (<reason>)`: which player was chosen and why; `Open failed (<code>)` and
+    `Falling back to the TV player` when the plugin did not start.
+  - `Initialized`: codec, size, audio track, duration. `Playing: {...}`: the plugin's info map when
+    the TV first reports `hdrType` (look for `DolbyVision`) and when it changes.
+  - `Status pos= buffered= playing= speed= leadMs= feedRetries= videoKbps= hdrType= audio=` every
+    30 s; the same line plus the info map as `Completed`, `Failed` (then `reopening with the TV
+    player`) and `Closing`. A stall shows as `pos` standing still with `leadMs` growing, a slow
+    source as `buffered` close to `pos`.
+  - `Seek <from>ms -> <to>ms`, `Audio track <id> -> stream #N`, `Speed <rate>`.
+- **Logs**, `plezy_native.log` (`[native-player]`, section 4): the Load payload, the Dolby Vision
+  decision (`dolby vision profile ... -> declared` / `converted to 8.1`), `setHdrInfo`, the audio
+  path, every event from LG's pipeline (`event type=N`; type 4 carries `hdrType`, type 18 errors),
+  `anchored at` after seeks, `lead:` every 5 s, feed retries and drops, and `error <code>`.
+  FFmpeg's own errors (for example TLS handshake failures) are in the same file. Neither file shows
+  audio/video sync: LG's pipeline does not report it, so sync has to be judged on screen.
 - **Known unknowns**: after profile 7 conversion the RPU extension blocks come out in a different
   order than `dovi_tool -m 2` writes them (content identical); whether LG's decoder cares is not
   known. No profile 7 FEL sample was tested. TLS certificates are not verified for https sources.

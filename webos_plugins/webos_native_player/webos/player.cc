@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <cstdarg>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <vector>
 
@@ -25,13 +27,25 @@ extern "C" {
 #include "hevc_sei.h"
 #include "starfish.h"
 
-#define LOG(...)                                \
-  do {                                          \
-    fprintf(stderr, "[native-player] ");        \
-    fprintf(stderr, __VA_ARGS__);               \
-    fputc('\n', stderr);                        \
-    fflush(stderr);                             \
-  } while (0)
+// One write per line, with wall-clock time, so lines from the player's threads do not interleave
+// and can be matched with the app's other logs.
+__attribute__((format(printf, 1, 2))) static void LogLine(const char* format, ...) {
+  char text[8192];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(text, sizeof text, format, args);
+  va_end(args);
+  timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  tm local;
+  localtime_r(&now.tv_sec, &local);
+  char stamp[32];
+  strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%S", &local);
+  fprintf(stderr, "%s.%03ld [native-player] %s\n", stamp, now.tv_nsec / 1000000, text);
+  fflush(stderr);
+}
+
+#define LOG(...) LogLine(__VA_ARGS__)
 
 namespace {
 

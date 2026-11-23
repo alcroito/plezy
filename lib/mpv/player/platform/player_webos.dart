@@ -141,6 +141,7 @@ class PlayerWebos extends PlayerBase {
 
   NativePlayerController? _native;
   VoidCallback? _nativeListener;
+  Timer? _feedStatusTimer;
   final Map<String, int> _audioIdToStreamIndex = {};
   int? _initialAudioStreamIndex;
   String? _initialAudioTrackId;
@@ -774,10 +775,12 @@ class PlayerWebos extends PlayerBase {
       }
       if (value.completed) {
         ended = true;
+        _logFeedStatus(controller, 'Completed');
         handlePropertyChange('eof-reached', true, sourceId: sourceId);
         handlePlayerEvent('end-file', {'reason': 'eof', 'sourceId': sourceId});
       } else if (value.errorCode != null) {
         ended = true;
+        _logFeedStatus(controller, 'Failed');
         appLogger.w('[WebOS-Feed] ${value.errorCode}: ${value.error}; reopening with the TV player');
         _feedFailedUri = media.uri;
         final resumeAt = currentPosition;
@@ -795,6 +798,10 @@ class PlayerWebos extends PlayerBase {
 
     _nativeListener = onValue;
     controller.addListener(onValue);
+    _feedStatusTimer?.cancel();
+    _feedStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_native == controller && !ended) _logFeedStatus(controller, 'Status');
+    });
     handlePlayerEvent('file-loaded', {'sourceId': sourceId});
     handlePlayerEvent('playback-restart', {
       'sourceId': sourceId,
@@ -807,6 +814,21 @@ class PlayerWebos extends PlayerBase {
     }
     onValue();
     return true;
+  }
+
+  /// One line with the plugin's playback state, so stalls, buffering and bitrate can be read from
+  /// plezy_runtime.log afterwards.
+  void _logFeedStatus(NativePlayerController controller, String label) {
+    final v = controller.value;
+    final info = v.info;
+    appLogger.i(
+      '[WebOS-Feed] $label pos=${(v.position.inMilliseconds / 1000).toStringAsFixed(1)}s '
+      'buffered=${(v.buffered.inMilliseconds / 1000).toStringAsFixed(1)}s playing=${v.playing} speed=${v.speed} '
+      'leadMs=${info['leadMs']} feedRetries=${info['feedRetries']} videoKbps=${info['videoKbps']} '
+      'hdrType=${info['hdrType']} audio=#${v.audioStream} ${v.audioCodec}'
+      '${v.errorCode != null ? ' error=${v.errorCode}: ${v.error}' : ''}',
+    );
+    if (label != 'Status') appLogger.i('[WebOS-Feed] $label info: $info');
   }
 
   Future<void> _ensureSubtitleLoaded(String trackId) async {
@@ -968,7 +990,10 @@ class PlayerWebos extends PlayerBase {
     _positionTimer = null;
     final native = _native;
     _native = null;
+    _feedStatusTimer?.cancel();
+    _feedStatusTimer = null;
     if (native != null) {
+      _logFeedStatus(native, 'Closing');
       final listener = _nativeListener;
       if (listener != null) native.removeListener(listener);
       await native.dispose();
@@ -1154,6 +1179,7 @@ class PlayerWebos extends PlayerBase {
     final native = _native;
     if (native != null) {
       if (disposed) return;
+      appLogger.i('[WebOS-Feed] Seek ${preSeekMs}ms -> ${targetMs}ms');
       await runSeek(position, () async {
         await native.seekTo(target);
         _refreshActiveSubtitleCues();
@@ -1206,6 +1232,7 @@ class PlayerWebos extends PlayerBase {
     final native = _native;
     if (native != null) {
       final index = _audioIdToStreamIndex[track.id];
+      appLogger.i('[WebOS-Feed] Audio track ${track.id} -> stream #$index (${track.codec})');
       if (index != null) await native.setAudioStream(index);
       return;
     }
@@ -1278,6 +1305,7 @@ class PlayerWebos extends PlayerBase {
     if (disposed) return;
     final native = _native;
     if (native != null) {
+      appLogger.i('[WebOS-Feed] Speed $rate (max ${native.value.maxSpeed})');
       await native.setSpeed(rate);
     } else if (texId != null) {
       try {

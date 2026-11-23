@@ -134,8 +134,9 @@ What mattered, found on the TV:
 - The exported window placed with `setExportedWindow` and the video's real size.
 
 Test knobs: key=value lines in the app's `/tmp/webos_native_player.conf` change payload and feed
-details at the next open (see `Knobs` in `player.cc`); every pipeline callback is logged to the
-app's `compat.log` (`[native-player]` lines).
+details at the next open (see `Knobs` in `player.cc`); every pipeline callback is logged to
+stderr (`[native-player]` lines, with wall-clock time). Upstream's legacy toolchain collects them in
+`compat.log`; in Plezy the runner sends stderr to `appdata/plezy_native.log`.
 
 Not done: DTS fed as is on TVs that decode it (the 2020-21 sets, the C1 among them, do not), VP9.
 
