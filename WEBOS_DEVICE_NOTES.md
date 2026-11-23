@@ -116,6 +116,15 @@ Glasshouse can also subscribe to a Homebrew Channel repository, for example
 `https://github.com/alcroito/plezy/releases/latest/download/plezy-webos6-24.repo.json`
 (see `WEBOS_CI.md`). After a catalog changes, refresh or re-add it; Glasshouse caches catalogs.
 
+To install a published release instead of a local build, download its IPK and check it against the
+release's manifest before uploading:
+
+```bash
+gh release download <tag> -R alcroito/plezy -p '*_arm_webos6-24.ipk' -p 'plezy-webos6-24.manifest.json'
+python3 -c 'import json;print(json.load(open("plezy-webos6-24.manifest.json"))["ipkHash"]["sha256"])'
+shasum -a 256 com.edde746.plezy_*_arm_webos6-24.ipk   # must match, then upload as in step 1
+```
+
 To check an IPK the way Glasshouse will, with a local Glasshouse checkout:
 
 ```bash
@@ -148,6 +157,10 @@ changed. `~/bin/tar` in the VM is the Ubuntu 24.04 tar (see gotchas).
   under load, so check soon.
 - **zsh does not split words.** `ssh $t` with `t="root@host -p 22"` passes one argument
   ("hostname contains invalid characters"). Use an array or a function with `"$@"`.
+- **zsh aborts on an unmatched glob.** `rm -f *.ipk` in an empty directory fails with "no matches
+  found" and stops a `&&` chain, so later steps in the same command silently do not run (variables
+  set later in the chain stay empty). Run multi-step scripts with `bash -c '...'`, or use `./*.ipk`
+  inside bash.
 - **macOS `ar`** cannot read GNU-style `ar` archives (member names ending in `/`), which
   `build_32bit_ipk.sh` produces with `ar r`. Glasshouse and the TV accept them.
 - **Glasshouse refuses GNU tar extensions.** Long paths (over 100 characters) in GNU format
@@ -567,3 +580,31 @@ GLNick deleted `webos-native-working` from `GLNick/plezy-webos`; the active bran
   `gh release upload --clobber`), and release notes that tie the package choice to hardware year and
   claim webOS 23 support, which the firmware data contradicts (a 2023 model on webOS 26 has
   glibc 2.38; webOS 23 has glibc 2.31).
+
+## 14. Release titles in Play Version
+
+Plex servers can put a title on each `Media` (version) entry. Plex Media Server leaves it empty for
+plain files; ether sets it to a release description such as (separators shown as `-`; ether uses a middle dot)
+`4K Dolby Vision WEB-DL - DD+ Atmos 5.1 - 6.9 GB` or `1080p WEB-DL - DD+ Atmos 5.1 - 2.5 GB - BlackTV`.
+Plex Web shows it in Play Version. Upstream Plezy dropped it (`PlexMediaVersionDto` had no `title`),
+so versions were labelled only by resolution, codec, container and bitrate, and releases with the
+same resolution and codec looked identical. Reported upstream as edde746/plezy#3141.
+
+This fork reads it (commit `49565bd07`, first released in `v2.26.0-webos.4`): `title` is parsed into
+`PlexMediaVersionDto` (`lib/services/plex_mappers.dart`, plus the hand-edited
+`plex_mappers.g.dart`) and becomes `MediaVersion.name`, which `displayLabel` puts in front of the
+technical label in the Play Version dialog and the in-player version sheet, for example
+`4K Dolby Vision WEB-DL - DD+ Atmos 5.1 - 6.9 GB - 4K HEVC MKV (19.2 Mbps)`. A missing or blank
+title changes nothing. Tests: `test/models/plex_media_version_test.dart`.
+
+Known limits:
+
+- Labels get long on a TV. #3141 suggests showing only the name when it already names the
+  resolution; not done, because it would also change Jellyfin labels.
+- ether can give two different releases the same title (both 4K releases of one episode read
+  `... 6.9 GB`, sizes round the same); only ether can fix that, for example by adding the release
+  group as it does for 1080p.
+- Version entries other than the played one can carry estimated details from ether until it has
+  probed the file (ether issues #678, #715).
+- Installed on the test TV from the `v2.26.0-webos.4` release; the labels were not yet checked on
+  screen.

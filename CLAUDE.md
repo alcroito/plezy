@@ -23,7 +23,7 @@ hardware video through LG's `NDL_media` and a custom subtitle engine.
 | `BUILD_WEBOS.md` | Author's build guide, toolchain versions, vendored dependencies |
 | `WEBOS_CI.md` | CI workflow, `scripts/webos/ci/*`, cache, releases, Homebrew Channel format |
 | `WEBOS_COMPAT_PATCHING.md` | Why the webOS 6-24 package exists, what the patching does, risks |
-| `WEBOS_DEVICE_NOTES.md` | TV access (SSH, Glasshouse), logs, install loop, gotchas, Magic Remote fix, cursor lag (graphics engine failure), memory, debugging techniques (Wayland trace, pointer and key injection, stall measurement, reading LG binaries), Dolby Vision on webOS 24 (why HDR10, options, ether), syncing with the author's branch |
+| `WEBOS_DEVICE_NOTES.md` | TV access (SSH, Glasshouse), logs, install loop, gotchas, Magic Remote fix, cursor lag (graphics engine failure), memory, debugging techniques (Wayland trace, pointer and key injection, stall measurement, reading LG binaries), Dolby Vision on webOS 24 (why HDR10, options, ether), syncing with the author's branch, release titles in Play Version |
 | `CLAUDE.local.md` | Local only (not committed): TV address, checkout path, VM setup; may not exist |
 
 ## Key facts
