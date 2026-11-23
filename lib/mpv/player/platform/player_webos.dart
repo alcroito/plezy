@@ -76,7 +76,7 @@ enum WebosFeedMode {
   /// Dolby Vision profiles 5, 7 and 8, as the server reports them.
   dolbyVision,
 
-  /// Also any HDR video (for servers that leave out the Dolby Vision fields).
+  /// Also any HDR video, for metadata without the Dolby Vision fields (e.g. an unprobed file).
   hdr,
 
   /// Every direct-play video.

@@ -568,8 +568,8 @@ and seeking are checked, but not whether the TV shows Dolby Vision.
   info reports Dolby Vision profile 5, 7 or 8 (`displayCriteria.doviProfile`). Everything else uses
   LG's player (NDL).
 - **Mode file**: `appdata/native_player_mode` next to `plezy_runtime.log`, read at each open.
-  `off`: never use the plugin. `hdr`: Dolby Vision plus any HDR (for servers such as ether that omit
-  the Dolby Vision fields for the Auto version). `all`: every direct-play video. Anything else, or no
+  `off`: never use the plugin. `hdr`: Dolby Vision plus any HDR, a fallback for metadata without the
+  Dolby Vision fields (see the ether notes below for when that can happen). `all`: every direct-play video. Anything else, or no
   file: Dolby Vision only.
 
   ```bash
@@ -618,8 +618,24 @@ and seeking are checked, but not whether the TV shows Dolby Vision.
 - For profile 8, ether's HLS playlist declares plain `hvc1` and deliberately omits
   `SUPPLEMENTAL-CODECS` (`internal/transcode/hls_attributes.go`); LG's player would have to detect
   Dolby Vision from the `dvcC` box in the segments.
-- ether's metadata for the Auto version omitted `DOVIPresent`/`DOVIProfile` on the tested file, so
-  Plezy cannot yet tell from metadata that a file is Dolby Vision.
+- ether's metadata for the Auto version omitted `DOVIPresent`/`DOVIProfile` on the one file checked
+  on 2026-11-22. The ether code read on 2026-11-23 (v0.3.20) does set them, so this was probably an
+  older ether build or an unprobed row:
+  - `internal/frontends/plex/convert.go` sets `DOVIPresent`, `DOVIProfile`, the level, the BL
+    compatibility ID and the BL/EL/RPU flags for every Dolby Vision stream in library metadata.
+  - Before the probe, `internal/resolver/variants.go` estimates a profile from the release info: 7
+    for remux or Blu-ray, 5 for Dolby Vision without HDR10, otherwise 8.
+  - `internal/frontends/plex/playback.go` removes the fields only in transcode decisions (Dolby
+    Vision stripped or video re-encoded), which Plezy's direct play does not use.
+  - `internal/frontends/plex/plezy_first_play.go`: when Plezy re-reads the metadata at play time,
+    ether waits up to 12 s for the probe and answers with the real streams.
+  - The fields can still be missing for an unprobed file whose release info does not mark Dolby
+    Vision, or when the probe takes longer than the wait. `native_player_mode` set to `hdr` covers
+    those cases.
+  - Not checked against the running server. To check a title:
+    `curl -s "http://<ether>:32400/library/metadata/<ratingKey>?includeStreams=1&X-Plex-Token=<token>" | grep -o 'DOVI[A-Za-z]*="[^"]*"'`,
+    or play it and look for `[WebOS-Feed] Opening ... (Dolby Vision profile N)` in
+    `plezy_runtime.log`.
 
 ## 13. Keeping up with the port author's branch
 
