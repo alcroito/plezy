@@ -1,0 +1,113 @@
+dovi_rpu: add to81, converting Dolby Vision profile 7 RPUs to profile 8.1
+
+For webos_native_player: LG TVs do not decode profile 7 (dual layer) as Dolby
+Vision. With to81 the filter rewrites each RPU as profile 8.1 the way
+dovi_tool's conversion mode 2 does, and the configuration record as profile 8
+(base layer compatibility 1, no enhancement layer); the player drops the
+enhancement layer NAL units itself. Use with compression=none (profile 7
+input does not allow compressed RPUs).
+
+--- a/libavcodec/bsf/dovi_rpu.c	2026-11-23 15:21:11.207593561 +1100
++++ b/libavcodec/bsf/dovi_rpu.c	2026-11-23 15:21:38.492253356 +1100
+@@ -40,8 +40,71 @@
+ 
+     int strip;
+     int compression;
++    int to81;
+ } DoviRpuContext;
+ 
++/*
++ * Profile 7 -> 8.1 (to81), as dovi_tool's conversion mode 2 does it: no
++ * enhancement layer residual, the standard profile 8.1 colour matrices, and
++ * for a full enhancement layer (FEL) identity mapping curves; a minimal
++ * enhancement layer (MEL) keeps its curves. The base layer of profile 7 is
++ * HDR10, so a decoder shows it with the converted metadata as profile 8.1.
++ * The caller drops the enhancement layer NAL units (type 63).
++ */
++static int dovi_is_mel(const AVDOVIRpuDataHeader *hdr, const AVDOVIDataMapping *m)
++{
++    const uint64_t one = 1ULL << hdr->coef_log2_denom;
++    for (int c = 0; c < 3; c++) {
++        const AVDOVINLQParams *nlq = &m->nlq[c];
++        if (nlq->nlq_offset || nlq->vdr_in_max != one ||
++            nlq->linear_deadzone_slope || nlq->linear_deadzone_threshold)
++            return 0;
++    }
++    return 1;
++}
++
++static void dovi_convert_to81(AVDOVIMetadata *metadata)
++{
++    static const int ycc_to_rgb[9] = { 9574, 0, 13802, 9574, -1540, -5348, 9574, 17610, 0 };
++    static const unsigned ycc_offset[3] = { 16777216, 134217728, 134217728 };
++    static const int rgb_to_lms[9] = { 7222, 8771, 390, 2654, 12430, 1300, 0, 422, 15962 };
++    AVDOVIRpuDataHeader *hdr = av_dovi_get_header(metadata);
++    AVDOVIDataMapping *m = av_dovi_get_mapping(metadata);
++    AVDOVIColorMetadata *color = av_dovi_get_color(metadata);
++    const int fel = m->nlq_method_idc != AV_DOVI_NLQ_NONE && !dovi_is_mel(hdr, m);
++
++    hdr->el_spatial_resampling_filter_flag = 0;
++    hdr->disable_residual_flag = 1;
++
++    m->nlq_method_idc = AV_DOVI_NLQ_NONE;
++    m->num_x_partitions = 1;
++    m->num_y_partitions = 1;
++    memset(m->nlq, 0, sizeof(m->nlq));
++    memset(m->nlq_pivots, 0, sizeof(m->nlq_pivots));
++
++    if (fel) {
++        for (int c = 0; c < 3; c++) {
++            AVDOVIReshapingCurve *curve = &m->curves[c];
++            memset(curve, 0, sizeof(*curve));
++            curve->num_pivots = 2;
++            curve->pivots[0] = 0;
++            curve->pivots[1] = 1023;
++            curve->mapping_idc[0] = AV_DOVI_MAPPING_POLYNOMIAL;
++            curve->poly_order[0] = 1;
++            curve->poly_coef[0][0] = 0;
++            curve->poly_coef[0][1] = 1LL << hdr->coef_log2_denom;
++        }
++    }
++
++    for (int i = 0; i < 9; i++) {
++        color->ycc_to_rgb_matrix[i] = av_make_q(ycc_to_rgb[i], 1 << 13);
++        color->rgb_to_lms_matrix[i] = av_make_q(rgb_to_lms[i], 1 << 14);
++    }
++    for (int i = 0; i < 3; i++)
++        color->ycc_to_rgb_offset[i] = av_make_q(ycc_offset[i], 1 << 28);
++    color->signal_color_space = 0;
++}
++
+ static int update_rpu(AVBSFContext *bsf, const AVPacket *pkt, int flags,
+                       const uint8_t *rpu, size_t rpu_size,
+                       uint8_t **out_rpu, int *out_size)
+@@ -66,6 +129,9 @@
+         return ret;
+     }
+ 
++    if (s->to81)
++        dovi_convert_to81(metadata);
++
+     if (pkt && !(pkt->flags & AV_PKT_FLAG_KEY))
+         flags |= FF_DOVI_COMPRESS_RPU;
+     ret = ff_dovi_rpu_generate(&s->enc, metadata, flags, out_rpu, out_size);
+@@ -214,6 +280,11 @@
+ 
+             /* Update configuration record before setting to enc ctx */
+             cfg->dv_md_compression = s->compression;
++            if (s->to81 && cfg->dv_profile == 7) {
++                cfg->dv_profile = 8;
++                cfg->el_present_flag = 0;
++                cfg->dv_bl_signal_compatibility_id = 1;
++            }
+             if (s->compression && s->dec.cfg.dv_profile < 8) {
+                 av_log(bsf, AV_LOG_ERROR, "Invalid compression level %d for "
+                        "Dolby Vision profile %d.\n", s->compression, s->dec.cfg.dv_profile);
+@@ -256,6 +327,7 @@
+ #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_BSF_PARAM)
+ static const AVOption dovi_rpu_options[] = {
+     { "strip",          "Strip Dolby Vision metadata",  OFFSET(strip),       AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, FLAGS },
++    { "to81",           "Convert profile 7 to 8.1",     OFFSET(to81),        AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, FLAGS },
+     { "compression",    "DV metadata compression mode", OFFSET(compression), AV_OPT_TYPE_INT,   { .i64 = AV_DOVI_COMPRESSION_LIMITED }, 0, AV_DOVI_COMPRESSION_EXTENDED, FLAGS, .unit = "compression" },
+         { "none",       "Don't compress metadata",      0, AV_OPT_TYPE_CONST, {.i64 = 0},                            .flags = FLAGS, .unit = "compression" },
+         { "limited",    "Limited metadata compression", 0, AV_OPT_TYPE_CONST, {.i64 = AV_DOVI_COMPRESSION_LIMITED},  .flags = FLAGS, .unit = "compression" },

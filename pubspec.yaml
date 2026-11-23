@@ -99,6 +99,8 @@ dependencies:
     path: webos_plugins/video_player
   webos_service_bridge:
     path: webos_plugins/webos_service_bridge
+  webos_native_player:
+    path: webos_plugins/webos_native_player
 
 dev_dependencies:
   archive: any

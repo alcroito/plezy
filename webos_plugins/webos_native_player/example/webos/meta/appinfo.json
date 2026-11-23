@@ -1,0 +1,22 @@
+{
+    "id": "com.flutter.app.webos-native-player-example",
+    "version": "1.0.0",
+    "vendor": "Webos-Flutter-Legacy-TV",
+    "type": "native",
+    "main": "webos_native_player_example",
+    "title": "webos_native_player example",
+    "icon": "icon.png",
+    "iconColor": "#ffffff",
+    "largeIcon": "icon.png",
+    "handlesRelaunch": true,
+    "visible": true,
+    "defaultWindowType": "card",
+    "trustLevel": "default",
+    "locationHint":"none",
+    "noSplashOnLaunch":true,
+    "spinnerOnLaunch": false,
+    "transparent":true,
+    "uiRevision":2,
+    "requiredACG": [
+    ]
+}
