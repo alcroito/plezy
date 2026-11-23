@@ -43,4 +43,28 @@ class StarfishMediaAPIs {
   alignas(16) unsigned char storage_[64 * 1024];
 };
 
+// The methods above, called through libplayerAPIs.so.1 opened with dlopen on first use, so the
+// plugin does not depend on that library and the app still starts on firmware without it.
+class Starfish {
+ public:
+  // nullptr when the library or one of its symbols is missing; LoadError() says which.
+  static Starfish* Create(const char* uid);
+  static const std::string& LoadError();
+  ~Starfish();
+
+  bool Load(const char* payload, StarfishMediaAPIs::Callback callback, void* context);
+  bool Unload();
+  bool Play();
+  bool Pause();
+  bool Seek(const char* millis);
+  bool pushEOS();
+  bool setHdrInfo(const char* json);
+  void notifyForeground();
+  std::string Feed(const char* payload);
+
+ private:
+  explicit Starfish(StarfishMediaAPIs* api) : api_(api) {}
+  StarfishMediaAPIs* api_;
+};
+
 #endif  // WEBOS_NATIVE_PLAYER_STARFISH_H_

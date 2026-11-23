@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
-// Host stand-in for the firmware's StarfishMediaAPIs: records what the player hands to LG's
-// pipeline (Load payloads, fed elementary streams, calls) into FAKE_STARFISH_OUT. Load N writes
-// load_N.json, video_N.es (Annex B as fed), audio_N.es and feed_N.tsv.
+// Host stand-in for the firmware's libplayerAPIs.so.1 (StarfishMediaAPIs): records what the player
+// hands to LG's pipeline (Load payloads, fed elementary streams, calls) into FAKE_STARFISH_OUT.
+// Load N writes load_N.json, video_N.es (Annex B as fed), audio_N.es and feed_N.tsv.
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>

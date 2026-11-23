@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:video_player_webos/video_player_webos.dart';
+import 'package:webos_native_player/webos_native_player.dart';
 
 import '../../../media/media_source_info.dart';
 import '../../../utils/app_logger.dart';
@@ -66,6 +67,39 @@ class _WebosHoleLayer extends Layer {
   }
 }
 
+/// Which direct-play videos [PlayerWebos] hands to the webos_native_player plugin (FFmpeg reads
+/// the file and feeds LG's decoder, which keeps Dolby Vision in MKV on webOS before 10.3) instead
+/// of LG's own player. Read from `appdata/native_player_mode` at each open; default [dolbyVision].
+enum WebosFeedMode {
+  off,
+
+  /// Dolby Vision profiles 5, 7 and 8, as the server reports them.
+  dolbyVision,
+
+  /// Also any HDR video (for servers that leave out the Dolby Vision fields).
+  hdr,
+
+  /// Every direct-play video.
+  all;
+
+  static WebosFeedMode read() {
+    try {
+      final file = File('${File(Platform.resolvedExecutable).parent.path}/appdata/native_player_mode');
+      if (file.existsSync()) {
+        switch (file.readAsStringSync().trim()) {
+          case 'off':
+            return WebosFeedMode.off;
+          case 'hdr':
+            return WebosFeedMode.hdr;
+          case 'all':
+            return WebosFeedMode.all;
+        }
+      }
+    } catch (_) {}
+    return WebosFeedMode.dolbyVision;
+  }
+}
+
 /// Hardware-accelerated player implementation for LG webOS (Starfish / NDL_media)
 /// with built-in ASS/SRT subtitle rendering & MKV live subtitle demuxing.
 class PlayerWebos extends PlayerBase {
@@ -104,6 +138,14 @@ class PlayerWebos extends PlayerBase {
   final Map<String, String> _subIdToExternalUri = {};
   final Map<String, int> _audioIdToOrderIndex = {};
   WebosMkvSubtitleExtractor? _mkvExtractor;
+
+  NativePlayerController? _native;
+  VoidCallback? _nativeListener;
+  final Map<String, int> _audioIdToStreamIndex = {};
+  int? _initialAudioStreamIndex;
+  String? _initialAudioTrackId;
+  // A source the plugin failed on plays with LG's player when it is opened again.
+  String? _feedFailedUri;
 
   PlayerWebos({this.audioOnly = false});
 
@@ -170,7 +212,10 @@ class PlayerWebos extends PlayerBase {
     _subIdToExternalUri.clear();
     _subIdToLangCode.clear();
     _audioIdToOrderIndex.clear();
+    _audioIdToStreamIndex.clear();
     _initialAudioOrderIdx = null;
+    _initialAudioStreamIndex = null;
+    _initialAudioTrackId = null;
     _initialPlexSelectedSubId = null;
 
     final entries = <Map<String, dynamic>>[
@@ -184,8 +229,11 @@ class PlayerWebos extends PlayerBase {
         final a = audioTracks[i];
         final tid = 'a_${a.id}';
         _audioIdToOrderIndex[tid] = i;
+        if (a.index != null) _audioIdToStreamIndex[tid] = a.index!;
         if (a.selected && _initialAudioOrderIdx == null) {
           _initialAudioOrderIdx = i;
+          _initialAudioStreamIndex = a.index;
+          _initialAudioTrackId = tid;
         }
         final langCode = (a.languageCode != null && a.languageCode!.trim().isNotEmpty)
             ? a.languageCode!.trim()
@@ -352,6 +400,25 @@ class PlayerWebos extends PlayerBase {
     var isHls = resolvedUri.contains('.m3u8') || resolvedUri.contains('start.m3u8');
     _isCurrentStreamHls = isHls;
     _saw702Error = false;
+
+    final feedReason = media.uri == _feedFailedUri ? null : _feedReason(isHls: isHls, isLive: isLive);
+    if (feedReason != null) {
+      appLogger.i('[WebOS-Feed] Opening sourceId=$sourceId ($feedReason) startMs=${sourceStart.inMilliseconds}');
+      if (await _openFeed(
+        media: media,
+        uri: resolvedUri,
+        sourceId: sourceId,
+        sourceStart: sourceStart,
+        play: play,
+        externalSubtitles: externalSubtitles,
+        timelineDuration: timelineDuration,
+        timelineOffset: timelineOffset,
+      )) {
+        return sourceId;
+      }
+      if (disposed || _currentSourceId != sourceId) return null;
+      appLogger.w('[WebOS-Feed] Falling back to the TV player for sourceId=$sourceId');
+    }
 
     final payloadJson = sourceStart.inMilliseconds > 0
         ? jsonEncode({
@@ -603,6 +670,145 @@ class PlayerWebos extends PlayerBase {
     }
   }
 
+  String? _feedReason({required bool isHls, required bool isLive}) {
+    if (audioOnly || isHls || isLive) return null;
+    final criteria = _pendingMediaInfo?.displayCriteria;
+    final profile = criteria?.doviProfile ?? 0;
+    final dolbyVision = profile == 5 || profile == 7 || profile == 8;
+    switch (WebosFeedMode.read()) {
+      case WebosFeedMode.off:
+        return null;
+      case WebosFeedMode.dolbyVision:
+        return dolbyVision ? 'Dolby Vision profile $profile' : null;
+      case WebosFeedMode.hdr:
+        if (dolbyVision) return 'Dolby Vision profile $profile';
+        return (criteria?.colorType.isHdr ?? false) ? 'HDR, mode hdr' : null;
+      case WebosFeedMode.all:
+        return 'mode all';
+    }
+  }
+
+  /// Plays [uri] through the webos_native_player plugin. False when it could not start, so the
+  /// caller opens the TV's own player instead.
+  Future<bool> _openFeed({
+    required Media media,
+    required String uri,
+    required int sourceId,
+    required Duration sourceStart,
+    required bool play,
+    required List<SubtitleTrack>? externalSubtitles,
+    required Duration? timelineDuration,
+    required Duration timelineOffset,
+  }) async {
+    final trackEntries = _buildTrackListEntries(externalSubtitles);
+    final controller = NativePlayerController(uri, startAt: sourceStart, audioStream: _initialAudioStreamIndex);
+    _native = controller;
+    try {
+      await controller.initialize();
+    } catch (e) {
+      appLogger.w('[WebOS-Feed] Open failed (${controller.value.errorCode ?? 'error'}): $e');
+      if (_native == controller) _native = null;
+      unawaited(controller.dispose());
+      return false;
+    }
+    if (disposed || _currentSourceId != sourceId || _native != controller) {
+      if (_native == controller) _native = null;
+      unawaited(controller.dispose());
+      return true;
+    }
+
+    final v = controller.value;
+    appLogger.i(
+      '[WebOS-Feed] Initialized sourceId=$sourceId ${v.videoCodec} ${v.size.width.toInt()}x${v.size.height.toInt()} '
+      'audio=#${v.audioStream} ${v.audioCodec} duration=${v.duration.inMilliseconds}ms',
+    );
+    _videoReadyForSubtitles = true;
+    if (v.duration > Duration.zero) {
+      handlePropertyChange('duration', v.duration.inMilliseconds / 1000.0, sourceId: sourceId);
+    }
+    setSeekable(true);
+    handlePropertyChange('track-list', trackEntries, sourceId: sourceId);
+    if (_initialAudioTrackId != null) updateSelectedAudioTrack(_initialAudioTrackId);
+    if (_initialPlexSelectedSubId != null) updateSelectedSubtitleTrack(_initialPlexSelectedSubId);
+
+    if (_subIdToEmbeddedOrderIndex.isNotEmpty) {
+      _mkvExtractor = WebosMkvSubtitleExtractor(
+        url: uri,
+        headers: media.headers,
+        getCurrentPositionMs: () => sourcePositionFor(currentPosition).inMilliseconds,
+        onCuesUpdated: _refreshActiveSubtitleCues,
+      );
+      unawaited(_mkvExtractor!.start());
+    }
+    if (_selectedSubTrackId != null) {
+      unawaited(_ensureSubtitleLoaded(_selectedSubTrackId!));
+    }
+
+    bool? lastPlaying;
+    var lastPositionMs = -1;
+    var lastBufferedMs = -1;
+    String? lastHdrType;
+    var ended = false;
+    void onValue() {
+      if (disposed || _currentSourceId != sourceId || _native != controller || ended) return;
+      final value = controller.value;
+      if (value.playing != lastPlaying) {
+        lastPlaying = value.playing;
+        handlePropertyChange('pause', !value.playing, sourceId: sourceId);
+      }
+      final positionMs = value.position.inMilliseconds;
+      if (positionMs != lastPositionMs) {
+        lastPositionMs = positionMs;
+        handlePropertyChange('time-pos', positionMs / 1000.0, sourceId: sourceId);
+        _refreshActiveSubtitleCues();
+      }
+      final bufferedMs = value.buffered.inMilliseconds;
+      if (bufferedMs != lastBufferedMs && bufferedMs > 0) {
+        lastBufferedMs = bufferedMs;
+        handlePropertyChange('demuxer-cache-time', bufferedMs / 1000.0, sourceId: sourceId);
+      }
+      final hdrType = value.info['hdrType'];
+      if (hdrType != null && hdrType != lastHdrType) {
+        lastHdrType = hdrType;
+        appLogger.i('[WebOS-Feed] Playing: ${value.info}');
+      }
+      if (value.completed) {
+        ended = true;
+        handlePropertyChange('eof-reached', true, sourceId: sourceId);
+        handlePlayerEvent('end-file', {'reason': 'eof', 'sourceId': sourceId});
+      } else if (value.errorCode != null) {
+        ended = true;
+        appLogger.w('[WebOS-Feed] ${value.errorCode}: ${value.error}; reopening with the TV player');
+        _feedFailedUri = media.uri;
+        final resumeAt = currentPosition;
+        unawaited(
+          open(
+            Media(media.uri, headers: media.headers, start: resumeAt),
+            play: true,
+            externalSubtitles: externalSubtitles,
+            timelineDuration: timelineDuration,
+            timelineOffset: timelineOffset,
+          ),
+        );
+      }
+    }
+
+    _nativeListener = onValue;
+    controller.addListener(onValue);
+    handlePlayerEvent('file-loaded', {'sourceId': sourceId});
+    handlePlayerEvent('playback-restart', {
+      'sourceId': sourceId,
+      'positionSeconds': v.position.inMilliseconds / 1000.0,
+    });
+    if (play) {
+      await controller.play();
+    } else {
+      await controller.pause();
+    }
+    onValue();
+    return true;
+  }
+
   Future<void> _ensureSubtitleLoaded(String trackId) async {
     if (_loadedExternalSubtitles.containsKey(trackId)) {
       _refreshActiveSubtitleCues();
@@ -760,6 +966,14 @@ class PlayerWebos extends PlayerBase {
   Future<void> _teardownActiveTexture() async {
     _positionTimer?.cancel();
     _positionTimer = null;
+    final native = _native;
+    _native = null;
+    if (native != null) {
+      final listener = _nativeListener;
+      if (listener != null) native.removeListener(listener);
+      await native.dispose();
+    }
+    _nativeListener = null;
     _mkvExtractor?.dispose();
     _mkvExtractor = null;
     _loadedExternalSubtitles.clear();
@@ -777,6 +991,11 @@ class PlayerWebos extends PlayerBase {
 
   @override
   Future<void> play() async {
+    final native = _native;
+    if (native != null) {
+      if (!disposed) await native.play();
+      return;
+    }
     final texId = _textureId;
     if (disposed || texId == null) return;
     await _webosPlatform.play(texId);
@@ -785,6 +1004,11 @@ class PlayerWebos extends PlayerBase {
 
   @override
   Future<void> pause() async {
+    final native = _native;
+    if (native != null) {
+      if (!disposed) await native.pause();
+      return;
+    }
     final texId = _textureId;
     if (disposed || texId == null) return;
     await _webosPlatform.pause(texId);
@@ -927,6 +1151,16 @@ class PlayerWebos extends PlayerBase {
     final preSeekMs = sourcePositionFor(currentPosition).inMilliseconds;
     WebosSubtitleClock.instance.notifySeek(targetMs);
 
+    final native = _native;
+    if (native != null) {
+      if (disposed) return;
+      await runSeek(position, () async {
+        await native.seekTo(target);
+        _refreshActiveSubtitleCues();
+      });
+      return;
+    }
+
     final texId = _textureId;
     if (disposed || texId == null) return;
 
@@ -969,6 +1203,12 @@ class PlayerWebos extends PlayerBase {
   @override
   Future<void> selectAudioTrack(AudioTrack track) async {
     updateSelectedAudioTrack(track.id);
+    final native = _native;
+    if (native != null) {
+      final index = _audioIdToStreamIndex[track.id];
+      if (index != null) await native.setAudioStream(index);
+      return;
+    }
     final texId = _textureId;
     final orderIdx = _audioIdToOrderIndex[track.id];
     if (texId != null && orderIdx != null) {
@@ -1036,7 +1276,10 @@ class PlayerWebos extends PlayerBase {
   Future<void> setRate(double rate) async {
     final texId = _textureId;
     if (disposed) return;
-    if (texId != null) {
+    final native = _native;
+    if (native != null) {
+      await native.setSpeed(rate);
+    } else if (texId != null) {
       try {
         await _webosPlatform.setPlaybackSpeed(texId, rate);
       } catch (_) {}
@@ -1085,7 +1328,7 @@ class PlayerWebos extends PlayerBase {
       case 'seekable':
         return state.seekable ? 'yes' : 'no';
       case 'hwdec-current':
-        return 'webos-ndl-hw';
+        return _native != null ? 'webos-feed-hw' : 'webos-ndl-hw';
       default:
         return null;
     }

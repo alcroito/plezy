@@ -56,7 +56,8 @@ hardware video through LG's `NDL_media` and a custom subtitle engine.
 | `lib/mpv/player/platform/webos_subtitle_engine.dart` | ASS/SSA, SRT/VTT, PGS rendering and MKV subtitle demuxing |
 | `lib/main.dart` | webOS key, back-policy and pointer hooks (`_installWebosBackAndNavigationHooks`) |
 | `lib/utils/app_logger.dart` | Also appends every log line to the app's `appdata/plezy_runtime.log` on the TV |
-| `scripts/webos/` | `env.sh`, `build_32bit_ipk.sh`, `ci/` (setup, build, Homebrew repo, publish) |
+| `webos_plugins/webos_native_player/` | FFmpeg-fed player used for Dolby Vision (see its `README.md`); chosen in `player_webos.dart` (`WebosFeedMode`) |
+| `scripts/webos/` | `env.sh`, `build_32bit_ipk.sh`, `ci/` (setup, build, Homebrew repo, publish), `build_native_player_ffmpeg.sh` (FFmpeg + mbedtls for the plugin), `native_player_host_test.sh` (VM test of the plugin) |
 
 ## Building
 
@@ -91,6 +92,9 @@ network-input socket) keys and pointer, but only with stdin kept open:
   working.
 - Do not edit `webos/flutter/ephemeral/`; override behavior in `webos/runner/main.cc`
   (`OnBuildViewProperties`) instead.
+- The native player's FFmpeg libraries are prebuilt and committed (`webos_plugins/webos_native_player/webos/ffmpeg/`);
+  CI does not build them. Rebuild with `scripts/webos/build_native_player_ffmpeg.sh` when FFmpeg or
+  mbedtls change, then re-check glibc and libstdc++ requirements of the patched package (`readelf -V`).
 - Diagnostic code marked `TEMP` is not committed.
 - When `build_32bit_ipk.sh` or the engine version changes, re-check the patched package's glibc and
   libstdc++ requirements (`readelf -V`, see `WEBOS_COMPAT_PATCHING.md` section 8).
@@ -98,6 +102,8 @@ network-input socket) keys and pointer, but only with stdin kept open:
 
 ## Open issues
 
+- The native player path (Dolby Vision through `webos_native_player`) has only run in the VM host test
+  and has not been tested on a TV (`WEBOS_DEVICE_NOTES.md` section 12).
 - Magic Remote pointer: LG's embedder handles pointer input on one Wayland seat only; the runner
   works around it (`WEBOS_DEVICE_NOTES.md` section 8). Not tested on webOS 25-26.
 - If showing the Magic Remote cursor makes the whole TV lag, or screenshots hang, check `dmesg` for

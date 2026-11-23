@@ -24,14 +24,10 @@ set(FFMPEG_LIBS
   "${FFMPEG_DIR}/lib/libavutil.so.59"
 )
 
-# Link-time stand-in for the firmware's libplayerAPIs.so.1 (not packaged).
-add_library(playerAPIs_stub SHARED "starfish_stub.cc")
-set_target_properties(playerAPIs_stub PROPERTIES
-  OUTPUT_NAME "playerAPIs" VERSION 1.0.0 SOVERSION 1)
-
 add_library(${PLUGIN_NAME} SHARED
   "plugin.cc"
   "player.cc"
+  "starfish_dl.cc"
   "hevc_sei.cc"
   "av1_obu.cc"
   "subtitles.cc"
@@ -49,7 +45,7 @@ target_include_directories(${PLUGIN_NAME} PRIVATE
 )
 target_link_libraries(${PLUGIN_NAME} PRIVATE
   flutter
-  playerAPIs_stub
+  ${CMAKE_DL_LIBS}
   ${FFMPEG_LIBS}
   ${LIBASS_STATIC}
   ${FRIBIDI_LIB}

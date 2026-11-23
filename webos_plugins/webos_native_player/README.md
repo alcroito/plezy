@@ -11,6 +11,41 @@ The design follows what [PlxNative](https://github.com/plxnative/plx-native) mea
 Part of [Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins);
 it works with LG's flutter-webos (webOS 26) and with the legacy build for older TVs.
 
+## Changes in Plezy's copy
+
+Vendored from Webos-Flutter-Legacy-TV/plugins, commit `7d70ae0` (`packages/webos_native_player`).
+Plezy changed four things. None of it has run on a TV yet; the checks below are from the x86_64 VM
+(`host_test/`) and from disassembly.
+
+1. **HTTPS.** FFmpeg 7.1.1 is rebuilt with mbedtls 3.6.8 linked statically into libavformat, and
+   the protocols `file,http,https,tcp,tls,crypto,data`. `--enable-version3` is needed for mbedtls
+   (Apache-2.0), so the bundled FFmpeg is LGPL-3.0-or-later (upstream's was LGPL-2.1-or-later).
+   Only libavformat changed (about +472 KB). TLS certificate verification is off (FFmpeg's default
+   `tls_verify=0`). libass and FriBidi are upstream's prebuilt binaries, unchanged.
+   - FFmpeg: https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz, sha256
+     `733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1`
+   - mbedtls: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.8/mbedtls-3.6.8.tar.bz2,
+     sha256 `bc54b818e87f49c0b3281dd85d24adaede0e63b4e822e3fbd49c005a38b9595b`
+   - Rebuild (x86_64 Linux, LG NDK 11.2.0):
+     `scripts/webos/build_native_player_ffmpeg.sh arm <ffmpeg tarball> <mbedtls tarball> <out>`,
+     then copy the soname files and headers into `webos/ffmpeg/`. The libraries are committed;
+     CI does not build them.
+2. **`libplayerAPIs.so.1` is loaded at run time.** `webos/starfish_dl.cc` calls `dlopen` on first
+   use and calls `StarfishMediaAPIs` through member-function pointers (Itanium ABI). The link stub
+   `starfish_stub.cc` is removed. Without the library, opening fails with `player_unavailable`
+   instead of the app failing to start. The ARM call sequences were compared with direct calls by
+   disassembly (static check only).
+3. **`hevc_sei.cc`:** the SEI payload pointer is `r.data() + i` (was `&r[i]`, which aborted under
+   libstdc++ assertions when the last payload had size 0; harmless on the TV).
+4. **`host_test/`:** builds `player.cc` on x86_64 against `fake_starfish.cc`, a fake
+   `libplayerAPIs.so.1` that records the Load payload, the fed streams and the calls. Driven by
+   `scripts/webos/native_player_host_test.sh` (11 cases: SDR H.264, HDR10, Dolby Vision 8.1 in MKV
+   and MP4, profile 5, profile 7 MEL with the RPUs compared to `dovi_tool -m 2`, seek, start offset,
+   audio selection, DTS to E-AC-3, plain http; all pass). Known difference: after profile 7
+   conversion the RPU extension blocks are in a different order than dovi_tool writes (Level 6
+   first) with identical content; whether LG's decoder cares is not known. No profile 7 FEL sample
+   was tested.
+
 ## Use
 
 ```yaml
@@ -47,12 +82,14 @@ await c.dispose();
   yourself from `controller.subtitle` (in your own style).
 - `value.errorCode` says why playback stopped: `decoder_busy` (another app or player holds the TV's
   decoder), `stalled`, `feed_refused`, `load_refused`, `pipeline_error`, `open_failed`,
-  `read_failed`, `unsupported_codec`. An app can then play the title another way.
+  `read_failed`, `unsupported_codec`, `player_unavailable` (`libplayerAPIs.so.1` could not be
+  loaded). An app can then play the title another way.
 - `value.info` is for a stats overlay: codecs, size, frame rate, the TV's own `hdrType`, Dolby
   Vision handling, audio source / output / path, measured video bitrate, buffered seconds.
 - With `releaseInBackground` (default) the TV's decoder is released while the app is in the
   background and playback reopens at the same position when it returns.
-- Sources: anything the bundled FFmpeg opens over HTTP or from a file (MKV, MP4, MPEG-TS, HLS).
+- Sources: anything the bundled FFmpeg opens over HTTP, HTTPS (certificates not verified) or from a
+  file (MKV, MP4, MPEG-TS, HLS).
 - [`example/`](example/) plays one URL given at build time; it is the smallest complete app.
 
 ## Status
@@ -113,21 +150,25 @@ Not done: DTS fed as is on TVs that decode it (the 2020-21 sets, the C1 among th
 - `webos/subtitles.cc` — subtitle decoding (pictures, text) and the libass renderer.
 - `webos/libass/` — libass 0.17.3 with HarfBuzz 10.1.0 and FreeType 2.13.3 (static) and FriBidi
   1.0.16 (shared, LGPL-2.1), built by `tools/build-libass.sh` from the official release tarballs.
-- `webos/starfish.h` — LG's class (no public header exists); `starfish_stub.cc` only for linking.
-- `webos/ffmpeg/` — FFmpeg 7.1.1, LGPL-2.1, shared, built by `tools/build-ffmpeg.sh` from the
-  official tarball (sha256 `733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1`)
-  with the patches in `tools/ffmpeg-patches/`.
+- `webos/starfish.h` — LG's class (no public header exists); `webos/starfish_dl.cc` loads
+  `libplayerAPIs.so.1` with `dlopen` at run time.
+- `webos/ffmpeg/` — FFmpeg 7.1.1 with mbedtls 3.6.8, LGPL-3.0+, shared, built by
+  `scripts/webos/build_native_player_ffmpeg.sh` (in the Plezy repo) from the official tarballs with
+  the patches in `tools/ffmpeg-patches/`. `tools/build-ffmpeg.sh` is upstream's script, without TLS.
+- `host_test/` — x86_64 test of `player.cc` against a fake `libplayerAPIs.so.1` (see above).
 - `example/` — a one-video player app.
 
 ## Licence
 
-The plugin's own code is BSD-3-Clause ([LICENSE](LICENSE)). The bundled FFmpeg is LGPL-2.1 or later,
-as shared libraries: apps may replace them, and the modified source is the official tarball plus
-`tools/ffmpeg-patches/` (`WEBOS_NDK_ENV=<LG NDK environment script> tools/build-ffmpeg.sh
-ffmpeg-7.1.1.tar.xz <out>` rebuilds them). libass (ISC), HarfBuzz (MIT) and FreeType (FreeType
-licence) are linked in; FriBidi (LGPL-2.1) is bundled as the shared `libfribidi.so.0`, rebuilt with
-`tools/build-libass.sh`. `webos/starfish.h` declares the TV firmware's media
-class (LG publishes no header); the firmware library itself is not bundled.
+The plugin's own code is BSD-3-Clause ([LICENSE](LICENSE)). The bundled FFmpeg is LGPL-3.0 or later
+(built with `--enable-version3` for mbedtls, Apache-2.0, which is linked statically into
+libavformat), as shared libraries: apps may replace them, and the modified source is the official
+FFmpeg and mbedtls tarballs plus `tools/ffmpeg-patches/`
+(`scripts/webos/build_native_player_ffmpeg.sh arm <ffmpeg tarball> <mbedtls tarball> <out>` in the
+Plezy repo rebuilds them). libass (ISC), HarfBuzz (MIT) and FreeType (FreeType licence) are linked
+in; FriBidi (LGPL-2.1) is bundled as the shared `libfribidi.so.0`, rebuilt with
+`tools/build-libass.sh`. `webos/starfish.h` declares the TV firmware's media class (LG publishes no
+header); the firmware library itself is not bundled.
 
 History: developed in Webos-Flutter-Legacy-TV/jellyfin-flutter (`packages/webos_native_player`)
 and moved here with its history.

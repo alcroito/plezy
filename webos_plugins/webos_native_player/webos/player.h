@@ -18,7 +18,7 @@
 
 #include "subtitles.h"
 
-class StarfishMediaAPIs;
+class Starfish;
 
 struct PlayerOptions {
   std::string url;
@@ -126,7 +126,7 @@ class Player {
   std::mutex mutex_;  // guards pipeline_ between the feed thread and Play/Pause from Dart
   std::condition_variable unload_done_;
 
-  StarfishMediaAPIs* pipeline_ = nullptr;
+  Starfish* pipeline_ = nullptr;
   struct Media;  // FFmpeg state, kept out of this header
   std::unique_ptr<Media> media_;
 };

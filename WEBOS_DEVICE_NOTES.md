@@ -540,10 +540,40 @@ stream; plx-native saw a TV switch into Dolby Vision mode over an HDR10 decode.
    on webOS 24 shows Dolby Vision from such a stream.
 3. **Remux on the TV** to fragmented MP4 in a local process and play `http://127.0.0.1/...`. Seeking
    means restarting the remux.
-4. **Feed the stream like plx-native**, with FFmpeg or the TV's own GStreamer `matroskademux` (it
-   ignores the Dolby Vision record but passes the RPU NALs, which live in the HEVC stream; the
-   profile can come from Plex's `DOVIProfile`). Large: timing, seeking and audio are all on the app.
+4. **Feed the stream like plx-native**: implemented with the `webos_native_player` plugin (FFmpeg
+   demuxes, LG's pipeline decodes); see "Option 4 as implemented" below.
 5. **webOS 26 update**: its MKV reader handles Dolby Vision (Profile 7 still plays as HDR10).
+
+### Option 4 as implemented (verified in the VM only, not on a TV)
+
+Nothing here has run on a TV. The VM host test (`scripts/webos/native_player_host_test.sh`, 11
+cases) checks the plugin against a fake `libplayerAPIs.so.1`, so the Load payload, the fed streams
+and seeking are checked, but not whether the TV shows Dolby Vision.
+
+- **Selection** (`lib/mpv/player/platform/player_webos.dart`, `WebosFeedMode`): `PlayerWebos` opens
+  a direct-play video (not HLS, not live, not audio-only) through the plugin when the server's media
+  info reports Dolby Vision profile 5, 7 or 8 (`displayCriteria.doviProfile`). Everything else uses
+  LG's player (NDL).
+- **Mode file**: `appdata/native_player_mode` next to `plezy_runtime.log`, read at each open.
+  `off`: never use the plugin. `hdr`: Dolby Vision plus any HDR (for servers such as ether that omit
+  the Dolby Vision fields for the Auto version). `all`: every direct-play video. Anything else, or no
+  file: Dolby Vision only.
+
+  ```bash
+  APP=/media/developer/apps/usr/palm/applications/com.edde746.plezy
+  ssh root@$TV "echo hdr > $APP/appdata/native_player_mode"
+  ```
+- **Fallback**: if the plugin fails to open, or reports an error later, the same file reopens with
+  LG's player at the current position, and that URI stays on LG's player for the session's later
+  opens. If `libplayerAPIs.so.1` cannot be loaded the error is `player_unavailable`.
+- **Subtitles** still come from Plezy's own engine (`webos_subtitle_engine.dart`), not the plugin's.
+  Audio tracks are selected by the server's stream `index`, which equals FFmpeg's stream index.
+- **Logs**: lines prefixed `[WebOS-Feed]` in `plezy_runtime.log`. `[WebOS-Feed] Playing: {...}` is
+  the plugin's info map, including the TV's own `hdrType` (look for `DolbyVision`). The plugin also
+  writes `[native-player]` lines to stderr.
+- **Known unknowns**: after profile 7 conversion the RPU extension blocks come out in a different
+  order than `dovi_tool -m 2` writes them (content identical); whether LG's decoder cares is not
+  known. No profile 7 FEL sample was tested. TLS certificates are not verified for https sources.
 
 **ether specifics** (ether sources, checked 2026-11-22):
 

@@ -157,6 +157,22 @@ package has its own repository.
   the Homebrew Channel does not offer it as an update.
 - GitHub may serve the previous file for a short time after a release asset is replaced.
 
+## Native player FFmpeg
+
+CI does not build the FFmpeg and mbedtls libraries of `webos_plugins/webos_native_player`; the
+prebuilt ARM libraries are committed in `webos_plugins/webos_native_player/webos/ffmpeg/`, as
+upstream does. To change versions, run on x86_64 Linux with the LG NDK 11.2.0:
+
+```bash
+scripts/webos/build_native_player_ffmpeg.sh arm <ffmpeg tarball> <mbedtls tarball> <out>
+```
+
+then copy the soname files and headers into `webos/ffmpeg/`. Afterwards re-check the glibc and
+libstdc++ requirements of the webOS 6-24 package with `readelf -V` (`WEBOS_COMPAT_PATCHING.md`
+section 8). With the plugin the package needs at most `GLIBC_2.35` and `GLIBCXX_3.4.29`: libavutil's
+`fmod@GLIBC_2.38` becomes unversioned through the ELF patching in `build_32bit_ipk.sh`. This
+was derived from static analysis, not checked on a TV.
+
 ## Running the scripts locally
 
 On Ubuntu x86_64 (22.04, 24.04 or 26.04), from the repository root:

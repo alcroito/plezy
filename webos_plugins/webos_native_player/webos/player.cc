@@ -490,7 +490,7 @@ void Player::Run() {
 }
 
 void Player::UnloadPipeline() {
-  StarfishMediaAPIs* pipeline;
+  Starfish* pipeline;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pipeline = pipeline_;
@@ -822,7 +822,12 @@ bool Player::LoadPipeline() {
            m.audio_codec ? "true" : "false", m.knobs.low_delay ? "true" : "false", live.c_str(), adaptive.c_str());
   LOG("load %s", payload);
 
-  auto* pipeline = new StarfishMediaAPIs(nullptr);
+  Starfish* pipeline = Starfish::Create(nullptr);
+  if (!pipeline) {
+    LOG("libplayerAPIs unavailable: %s", Starfish::LoadError().c_str());
+    EmitError("player_unavailable", "The TV's media library could not be loaded: " + Starfish::LoadError());
+    return false;
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pipeline_ = pipeline;
