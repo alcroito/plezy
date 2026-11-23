@@ -67,6 +67,13 @@ class NativePlayerPlugin : public flutter::Plugin {
     std::deque<EventMap> pending;  // events before Dart listens
   };
 
+  struct DisposeJob {
+    GMainContext* context;
+    std::unique_ptr<Player> player;
+    std::unique_ptr<flutter::MethodResult<EncodableValue>> result;
+    ~DisposeJob() { g_main_context_unref(context); }
+  };
+
   struct Posted {
     NativePlayerPlugin* plugin;
     int64_t id;
@@ -191,9 +198,19 @@ class NativePlayerPlugin : public flutter::Plugin {
       for (const auto& kv : player.Status()) map[EncodableValue(kv.first)] = EncodableValue(kv.second);
       result->Success(EncodableValue(map));
     } else if (method == "dispose") {
-      Release(std::move(it->second.player));
+      // Reply once the TV has unloaded the pipeline, so the app's next player finds the decoder free.
+      auto* job = new DisposeJob{g_main_context_ref(main_context_), std::move(it->second.player), std::move(result)};
       players_.erase(it);
-      result->Success();
+      std::thread([job] {
+        job->player.reset();
+        g_main_context_invoke_full(
+            job->context, G_PRIORITY_DEFAULT,
+            [](gpointer data) -> gboolean {
+              static_cast<DisposeJob*>(data)->result->Success();
+              return G_SOURCE_REMOVE;
+            },
+            job, [](gpointer data) { delete static_cast<DisposeJob*>(data); });
+      }).detach();
     } else {
       result->NotImplemented();
     }

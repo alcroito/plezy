@@ -108,6 +108,7 @@ bool StarfishMediaAPIs::Play() {
   std::lock_guard<std::mutex> lock(S().mutex);
   S().playing = true;
   Call("Play");
+  if (S().feeds) fprintf(S().feeds, "play\t0\t0\n");
   return true;
 }
 

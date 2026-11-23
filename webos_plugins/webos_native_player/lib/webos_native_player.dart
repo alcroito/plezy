@@ -211,7 +211,7 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
   Future<void> _open(Duration at, int? audio) async {
     final ready = _ready = Completer<void>();
     _byteSamples.clear();
-    _id = await _channel.invokeMethod<int>('open', {
+    final newId = await _channel.invokeMethod<int>('open', {
       'url': url,
       'windowId': _windowId,
       'startMs': at.inMilliseconds,
@@ -219,6 +219,12 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
       if (_subtitleStream != null) 'subtitleStream': _subtitleStream,
       if (_audioDelay != Duration.zero) 'audioDelayMs': _audioDelay.inMilliseconds,
     });
+    if (_disposed) {
+      if (newId != null) await _channel.invokeMethod('dispose', {'id': newId});
+      if (!ready.isCompleted) ready.completeError(StateError('disposed'));
+      return ready.future;
+    }
+    _id = newId;
     _events = EventChannel('webos_native_player/events/$_id').receiveBroadcastStream().listen((raw) => _onEvent(Map<String, String>.from(raw as Map), at));
     return ready.future;
   }
@@ -433,7 +439,7 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
 
   Future<void> _resume() async {
     _suspended = false;
-    if (value.completed || value.error != null) return;
+    if (_disposed || value.completed || value.error != null) return;
     try {
       final speed = value.speed;
       await _open(value.position, _audioOverride ?? audioStream);
@@ -487,6 +493,8 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    final pending = _ready;
+    if (pending != null && !pending.isCompleted) pending.completeError(StateError('disposed'));
     WidgetsBinding.instance.removeObserver(this);
     _positionTimer?.cancel();
     _subtitleTimer?.cancel();

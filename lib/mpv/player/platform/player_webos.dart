@@ -147,6 +147,8 @@ class PlayerWebos extends PlayerBase {
   String? _initialAudioTrackId;
   // A source the plugin failed on plays with LG's player when it is opened again.
   String? _feedFailedUri;
+  String? _feedError;
+  VoidCallback? _feedRearm;
 
   PlayerWebos({this.audioOnly = false});
 
@@ -418,6 +420,10 @@ class PlayerWebos extends PlayerBase {
         return sourceId;
       }
       if (disposed || _currentSourceId != sourceId) return null;
+      if (_isDolbyVisionProfile5(null)) {
+        _failProfile5(sourceId, _feedError);
+        return sourceId;
+      }
       appLogger.w('[WebOS-Feed] Falling back to the TV player for sourceId=$sourceId');
     }
 
@@ -709,12 +715,13 @@ class PlayerWebos extends PlayerBase {
     } catch (e) {
       appLogger.w('[WebOS-Feed] Open failed (${controller.value.errorCode ?? 'error'}): $e');
       if (_native == controller) _native = null;
-      unawaited(controller.dispose());
+      _feedError = controller.value.error ?? e.toString();
+      await controller.dispose();
       return false;
     }
     if (disposed || _currentSourceId != sourceId || _native != controller) {
       if (_native == controller) _native = null;
-      unawaited(controller.dispose());
+      await controller.dispose();
       return true;
     }
 
@@ -750,6 +757,7 @@ class PlayerWebos extends PlayerBase {
     var lastBufferedMs = -1;
     String? lastHdrType;
     var ended = false;
+    var completedEnd = false;
     void onValue() {
       if (disposed || _currentSourceId != sourceId || _native != controller || ended) return;
       final value = controller.value;
@@ -775,12 +783,17 @@ class PlayerWebos extends PlayerBase {
       }
       if (value.completed) {
         ended = true;
+        completedEnd = true;
         _logFeedStatus(controller, 'Completed');
         handlePropertyChange('eof-reached', true, sourceId: sourceId);
         handlePlayerEvent('end-file', {'reason': 'eof', 'sourceId': sourceId});
       } else if (value.errorCode != null) {
         ended = true;
         _logFeedStatus(controller, 'Failed');
+        if (_isDolbyVisionProfile5(controller)) {
+          _failProfile5(sourceId, value.error);
+          return;
+        }
         appLogger.w('[WebOS-Feed] ${value.errorCode}: ${value.error}; reopening with the TV player');
         _feedFailedUri = media.uri;
         final resumeAt = currentPosition;
@@ -797,6 +810,12 @@ class PlayerWebos extends PlayerBase {
     }
 
     _nativeListener = onValue;
+    _feedRearm = () {
+      if (!completedEnd) return;
+      completedEnd = false;
+      ended = false;
+      onValue();
+    };
     controller.addListener(onValue);
     _feedStatusTimer?.cancel();
     _feedStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -814,6 +833,19 @@ class PlayerWebos extends PlayerBase {
     }
     onValue();
     return true;
+  }
+
+  bool _isDolbyVisionProfile5(NativePlayerController? controller) =>
+      _pendingMediaInfo?.displayCriteria?.doviProfile == 5 ||
+      (controller?.value.info['dolbyVision']?.toLowerCase().startsWith('profile 5') ?? false);
+
+  void _failProfile5(int sourceId, String? message) {
+    appLogger.w('[WebOS-Feed] Dolby Vision profile 5 cannot play on the TV player; not falling back');
+    handlePlayerEvent('end-file', {
+      'reason': 'error',
+      'message': message ?? 'Dolby Vision profile 5 needs the native player, which failed to start',
+      'sourceId': sourceId,
+    });
   }
 
   /// One line with the plugin's playback state, so stalls, buffering and bitrate can be read from
@@ -999,6 +1031,7 @@ class PlayerWebos extends PlayerBase {
       await native.dispose();
     }
     _nativeListener = null;
+    _feedRearm = null;
     _mkvExtractor?.dispose();
     _mkvExtractor = null;
     _loadedExternalSubtitles.clear();
@@ -1182,6 +1215,7 @@ class PlayerWebos extends PlayerBase {
       appLogger.i('[WebOS-Feed] Seek ${preSeekMs}ms -> ${targetMs}ms');
       await runSeek(position, () async {
         await native.seekTo(target);
+        _feedRearm?.call();
         _refreshActiveSubtitleCues();
       });
       return;

@@ -14,7 +14,7 @@ it works with LG's flutter-webos (webOS 26) and with the legacy build for older 
 ## Changes in Plezy's copy
 
 Vendored from Webos-Flutter-Legacy-TV/plugins, commit `7d70ae0` (`packages/webos_native_player`).
-Plezy changed four things. None of it has run on a TV yet; the checks below are from the x86_64 VM
+Plezy changed five things. None of it has run on a TV yet; the checks below are from the x86_64 VM
 (`host_test/`) and from disassembly.
 
 1. **HTTPS.** FFmpeg 7.1.1 is rebuilt with mbedtls 3.6.8 linked statically into libavformat, and
@@ -39,12 +39,19 @@ Plezy changed four things. None of it has run on a TV yet; the checks below are 
    libstdc++ assertions when the last payload had size 0; harmless on the TV).
 4. **`host_test/`:** builds `player.cc` on x86_64 against `fake_starfish.cc`, a fake
    `libplayerAPIs.so.1` that records the Load payload, the fed streams and the calls. Driven by
-   `scripts/webos/native_player_host_test.sh` (11 cases: SDR H.264, HDR10, Dolby Vision 8.1 in MKV
+   `scripts/webos/native_player_host_test.sh` (13 cases: SDR H.264, HDR10, Dolby Vision 8.1 in MKV
    and MP4, profile 5, profile 7 MEL with the RPUs compared to `dovi_tool -m 2`, seek, start offset,
-   audio selection, DTS to E-AC-3, plain http; all pass). Known difference: after profile 7
+   audio selection, DTS to E-AC-3, plain http, seeks without IDR keyframes; all pass). Known difference: after profile 7
    conversion the RPU extension blocks are in a different order than dovi_tool writes (Level 6
    first) with identical content; whether LG's decoder cares is not known. No profile 7 FEL sample
    was tested.
+5. **Fixes from the review against plx-native** (`WEBOS_DOLBY_VISION_REVIEW.md` in the Plezy repo):
+   play starts only after the priming second; `dispose` replies after the TV has unloaded; callbacks
+   go through a context that is cleared at unload; at most 4 non-IDR keyframes are skipped after a
+   start or seek, then the first skipped one is used; a refused seek reloads the pipeline; a failed
+   profile 7 conversion feeds the picture without its RPU; enhancement-layer NAL units above layer 0
+   are removed; the frame rate is snapped to standard rates; `setHdrInfo` is skipped with Dolby
+   Vision declared (knob `hdr_info_dv`); the Dart controller handles dispose during `initialize`.
 
 ## Use
 

@@ -559,7 +559,7 @@ stream; plx-native saw a TV switch into Dolby Vision mode over an HDR10 decode.
 
 ### Option 4 as implemented (verified in the VM only, not on a TV)
 
-Nothing here has run on a TV. The VM host test (`scripts/webos/native_player_host_test.sh`, 11
+Nothing here has run on a TV. The VM host test (`scripts/webos/native_player_host_test.sh`, 13
 cases) checks the plugin against a fake `libplayerAPIs.so.1`, so the Load payload, the fed streams
 and seeking are checked, but not whether the TV shows Dolby Vision.
 
@@ -578,7 +578,10 @@ and seeking are checked, but not whether the TV shows Dolby Vision.
   ```
 - **Fallback**: if the plugin fails to open, or reports an error later, the same file reopens with
   LG's player at the current position, and that URI stays on LG's player for the session's later
-  opens. If `libplayerAPIs.so.1` cannot be loaded the error is `player_unavailable`.
+  opens. Not for Dolby Vision profile 5: LG's player would show it with wrong colours, so playback
+  ends with the plugin's error instead (`not falling back` in the log). `setHdrInfo` is not sent
+  when Dolby Vision is declared (as plx-native); the knob `hdr_info_dv=1` in the app's
+  `/tmp/webos_native_player.conf` sends it. Review and fixes: `WEBOS_DOLBY_VISION_REVIEW.md`. If `libplayerAPIs.so.1` cannot be loaded the error is `player_unavailable`.
 - **Subtitles** still come from Plezy's own engine (`webos_subtitle_engine.dart`), not the plugin's.
   Audio tracks are selected by the server's stream `index`, which equals FFmpeg's stream index.
 - **Logs**, `plezy_runtime.log` (`[WebOS-Feed]`):

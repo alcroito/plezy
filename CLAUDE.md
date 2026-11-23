@@ -70,6 +70,9 @@ scripts/webos/ci/setup-toolchain.sh   # once; installs NDK, flutter-webos, Node,
 scripts/webos/ci/build.sh             # both IPKs into dist/
 ```
 
+`flutter-webos analyze <file>` rewrites `webos/flutter/main.dart` to import that file as the entry
+point; run `git checkout webos/flutter/main.dart` afterwards.
+
 In the OrbStack VM, prefix `PATH=$HOME/bin:$PATH` (working `tar`, see `WEBOS_DEVICE_NOTES.md`). The
 build cannot run on macOS directly.
 

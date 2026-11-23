@@ -117,6 +117,7 @@ class Player {
   // refuses Seek before it plays); after a Seek the pipeline runs on content time and this is 0.
   std::atomic<int64_t> pts_shift_ns_{0};  // from the pipeline's frame-ready event (type 0, ~5 Hz)
   std::atomic<bool> loaded_{false};
+  std::atomic<bool> started_{false};      // the priming second is fed; Play() may start the clock
   std::atomic<bool> failed_{false};       // an error was reported: the feed stops
   std::atomic<int64_t> fed_video_bytes_{0};
   std::mutex info_mutex_;                 // guards hdr_type_ and info_ (written on pipeline threads)
@@ -127,6 +128,8 @@ class Player {
   std::condition_variable unload_done_;
 
   Starfish* pipeline_ = nullptr;
+  struct CallbackContext;
+  CallbackContext* callback_context_ = nullptr;  // passed to the current pipeline's callbacks
   struct Media;  // FFmpeg state, kept out of this header
   std::unique_ptr<Media> media_;
 };

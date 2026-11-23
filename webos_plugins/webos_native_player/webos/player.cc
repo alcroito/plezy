@@ -110,8 +110,8 @@ struct Knobs {
   bool low_delay = false;      // lowDelayMode
   int max_frame_rate = 60;     // adaptiveStreaming.maxFrameRate
   bool declare_dv = true;      // send DolbyHdrInfo for profiles 5 / 8
-  bool p7_to_81 = true;
-  bool libass = true;          // ASS / SSA drawn with libass (else shown as plain text)        // profile 7: convert the RPUs to 8.1, drop the enhancement layer, declare 8
+  bool p7_to_81 = true;        // profile 7: convert the RPUs to 8.1, drop the enhancement layer, declare 8
+  bool libass = true;          // ASS / SSA drawn with libass (else shown as plain text)
   bool drop_rpu = false;       // drop Dolby Vision RPU NAL units (type 62) before feeding
   int hold_packets = 0;        // keep the last N fed packets alive (does Feed read later?)
   bool adaptive = true;        // send the adaptiveStreaming block (max size / rate envelope)
@@ -123,6 +123,7 @@ struct Knobs {
   bool eac3 = true;            // re-encode to E-AC-3 (declared with ac3PlusInfo) rather than AC-3
   bool dump_audio = false;     // write the first 20 s of re-encoded audio to /tmp/wnp-audio.ac3
   bool hdr_info = true;        // setHdrInfo after Load (HDR10 / HLG colour description)
+  bool hdr_info_dv = false;    // setHdrInfo also when Dolby Vision is declared (plx-native never calls it)
 };
 
 Knobs ReadKnobs() {
@@ -148,6 +149,7 @@ Knobs ReadKnobs() {
     else if (k2 == "live") k.live = v != 0;
     else if (k2 == "strip_hdr10plus") k.strip_hdr10plus = v != 0;
     else if (k2 == "hdr_info") k.hdr_info = v != 0;
+    else if (k2 == "hdr_info_dv") k.hdr_info_dv = v != 0;
     else if (k2 == "own_annexb") k.own_annexb = v != 0;
     else if (k2 == "audio_transcode") k.audio_transcode = v != 0;
     else if (k2 == "ac3_bitrate") k.ac3_bitrate = static_cast<int>(v);
@@ -182,8 +184,9 @@ void AnnexBToLengthPrefixed(const uint8_t* d, int n, int nal_length_size, std::v
   }
 }
 
-int StripNalType(uint8_t* d, int n, int drop_type) {
-  int out = 0, i = 0;
+template <typename Drop>
+int StripNals(uint8_t* d, int n, Drop drop) {
+  int out = 0;
   auto next_start = [&](int from) {
     for (int j = from; j + 2 < n; j++)
       if (d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1) return j;
@@ -195,17 +198,45 @@ int StripNalType(uint8_t* d, int n, int drop_type) {
     int end = next_start(payload);
     int nal_end = end;
     if (end < n && end > payload && d[end - 1] == 0) nal_end = end - 1;  // 4-byte start code
-    int type = payload < n ? (d[payload] >> 1) & 0x3f : -1;
     int from = (start > 0 && d[start - 1] == 0) ? start - 1 : start;
-    if (type != drop_type) {
+    if (payload >= n || !drop(d + payload, n - payload)) {
       memmove(d + out, d + from, nal_end - from);
       out += nal_end - from;
     }
     start = end;
-    (void)i;
   }
   return out;
 }
+
+int StripNalType(uint8_t* d, int n, int drop_type) {
+  return StripNals(d, n, [drop_type](const uint8_t* h, int) { return ((h[0] >> 1) & 0x3f) == drop_type; });
+}
+
+// Profile 7's enhancement layer: NAL type 63 and any NAL unit above layer 0 (as plx-native drops).
+int StripEnhancementLayer(uint8_t* d, int n) {
+  return StripNals(d, n, [](const uint8_t* h, int len) {
+    const int layer = len >= 2 ? ((h[0] & 1) << 5) | (h[1] >> 3) : 0;
+    return ((h[0] >> 1) & 0x3f) == 63 || layer > 0;
+  });
+}
+
+// LG's pipeline places pictures on a lattice from the declared rate; container rates such as
+// 2997/125 are snapped to the standard rationals, as plx-native does.
+AVRational SnapFrameRate(AVRational r) {
+  if (r.num <= 0 || r.den <= 0) return r;
+  static const AVRational kRates[] = {{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1},
+                                      {48000, 1001}, {48, 1}, {50, 1}, {60000, 1001}, {60, 1}};
+  const double fps = av_q2d(r);
+  for (const AVRational& c : kRates) {
+    if (std::fabs(fps - av_q2d(c)) < 0.01) return c;
+  }
+  return r;
+}
+
+// Keyframes skipped while waiting for an IDR after a start or seek with Dolby Vision declared.
+// The C1 (webOS 6.5.3) needs an IDR; plx-native found later firmware takes any random access
+// picture, so open-GOP streams anchor on a CRA after this many.
+constexpr int kMaxIdrWaitKeyframes = 4;
 
 // setHdrInfo payload from the container's colour description (as Kodi and webos-native-app-kit send
 // it): hdrType, the mastering display / light level SEI values (primaries G, B, R in 1/50000,
@@ -294,6 +325,10 @@ struct Player::Media {
   AVBSFContext* to81 = nullptr;    // Dolby Vision profile 7 RPUs -> 8.1 (our dovi_rpu patch)
   int to81_errors = 0;
   int non_idr_skipped = 0;
+  int anchor_skips = 0;          // keyframes skipped for the current anchor
+  int64_t anchor_skip_ms = -1;   // the first of them, to go back to when no IDR comes
+  bool anchor_rewind = false;    // go back to anchor_skip_ms before reading on
+  AVPacket* to81_copy = nullptr;  // the access unit before conversion, fed without RPU if it fails
   bool to81_annexb_logged = false;
   std::vector<uint8_t> relen;  // an access unit re-prefixed with NAL lengths
   int video = -1;
@@ -341,6 +376,7 @@ struct Player::Media {
   ~Media() {
     if (annexb) av_bsf_free(&annexb);
     if (to81) av_bsf_free(&to81);
+    if (to81_copy) av_packet_free(&to81_copy);
     if (format) avformat_close_input(&format);
   }
 };
@@ -388,7 +424,8 @@ EventMap Player::Status() {
 void Player::Play() {
   paused_ = false;
   std::lock_guard<std::mutex> lock(mutex_);
-  if (pipeline_ && loaded_) pipeline_->Play();
+  // Before the priming second is fed, FeedLoop starts the clock itself.
+  if (pipeline_ && loaded_ && started_) pipeline_->Play();
 }
 
 void Player::Pause() {
@@ -503,6 +540,13 @@ void Player::Run() {
   LOG("closed");
 }
 
+// What LG's pipeline calls back with. It is cleared at unload and never freed: the firmware may still
+// call after an unconfirmed unload (plx-native keeps its callback targets alive for the same reason).
+struct Player::CallbackContext {
+  std::mutex mutex;
+  Player* player = nullptr;
+};
+
 void Player::UnloadPipeline() {
   Starfish* pipeline;
   {
@@ -516,6 +560,11 @@ void Player::UnloadPipeline() {
     std::unique_lock<std::mutex> lock(mutex_);
     unload_done_.wait_for(lock, std::chrono::seconds(3), [this] { return unloaded_.load(); });
     pipeline_ = nullptr;
+  }
+  if (callback_context_) {
+    std::lock_guard<std::mutex> lock(callback_context_->mutex);
+    callback_context_->player = nullptr;
+    callback_context_ = nullptr;
   }
   if (unloaded_) {
     delete pipeline;
@@ -536,8 +585,11 @@ bool Player::ReloadPipeline(int64_t at_ms) {
   if (m.to81) av_bsf_flush(m.to81);
   if (m.transcoder) m.transcoder->Flush();
   m.started = false;
+  started_ = false;
   m.first_fed_ns = -1;
   m.anchor_pending = true;
+  m.anchor_skips = 0;
+  m.anchor_skip_ms = -1;
   m.initial_start = true;  // a fresh pipeline: the timeline starts at 0 again, shifted
   m.fresh_start = false;
   m.logged_aus = 0;
@@ -587,7 +639,7 @@ bool Player::Open() {
   m.is_hevc = vs->codecpar->codec_id == AV_CODEC_ID_HEVC;
   m.is_av1 = vs->codecpar->codec_id == AV_CODEC_ID_AV1;
   m.hdr_info = HdrInfoPayload(vs->codecpar, nullptr);
-  m.frame_rate = vs->avg_frame_rate.num > 0 ? vs->avg_frame_rate : vs->r_frame_rate;
+  m.frame_rate = SnapFrameRate(vs->avg_frame_rate.num > 0 ? vs->avg_frame_rate : vs->r_frame_rate);
   if (const AVPacketSideData* sd = av_packet_side_data_get(vs->codecpar->coded_side_data,
                                                            vs->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF)) {
     auto* dovi = reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sd->data);
@@ -847,16 +899,19 @@ bool Player::LoadPipeline() {
     pipeline_ = pipeline;
   }
   pipeline->notifyForeground();
-  if (!pipeline->Load(payload, &Player::PipelineCallback, this)) {
+  callback_context_ = new CallbackContext;
+  callback_context_->player = this;
+  if (!pipeline->Load(payload, &Player::PipelineCallback, callback_context_)) {
     EmitError("load_refused", "The TV's media pipeline refused to load");
     return false;
   }
   loaded_ = true;
-  if (m.knobs.hdr_info && !m.hdr_info.empty()) {
+  if (m.knobs.hdr_info && !m.hdr_info.empty() && (!m.dv_declared || m.knobs.hdr_info_dv)) {
     bool ok = pipeline->setHdrInfo(m.hdr_info.c_str());
     LOG("setHdrInfo %s -> %d", m.hdr_info.c_str(), ok);
   } else {
-    LOG("no setHdrInfo (%s)", m.hdr_info.empty() ? "no HDR colour data in the container" : "off");
+    LOG("no setHdrInfo (%s)", m.hdr_info.empty() ? "no HDR colour data in the container"
+                              : m.dv_declared ? "Dolby Vision declared" : "off");
   }
   {
     EventMap info;
@@ -1024,8 +1079,9 @@ void Player::FeedLoop() {
             {"subtitleMode", SubtitleMode(is_ass, m.subdec.get())}});
     }
     int64_t seek_ms = seek_request_ms_.exchange(-1);
-    if (seek_ms >= 0 && speed_permille_ != 1000) {
-      // At a speed the pipeline's timeline is scaled: a seek starts a fresh one.
+    if (seek_ms >= 0 && (speed_permille_ != 1000 || !m.started)) {
+      // At a speed the pipeline's timeline is scaled, and before it plays it refuses Seek: a seek
+      // starts a fresh one.
       if (!ReloadPipeline(seek_ms)) break;
       eos = false;
       seek_ms = -1;
@@ -1036,6 +1092,8 @@ void Player::FeedLoop() {
       if (m.annexb) av_bsf_flush(m.annexb);
       if (m.to81) av_bsf_flush(m.to81);
       m.anchor_pending = true;
+      m.anchor_skips = 0;
+      m.anchor_skip_ms = -1;
       m.fresh_start = false;
       if (m.transcoder) m.transcoder->Flush();
       eos = false;
@@ -1080,7 +1138,22 @@ void Player::FeedLoop() {
       continue;
     }
 
+    if (m.anchor_rewind) {
+      // No IDR in time (or before the end): anchor on the first keyframe that was skipped.
+      LOG("no IDR after %d keyframes; anchoring at %" PRId64 " ms", m.anchor_skips, m.anchor_skip_ms);
+      av_seek_frame(m.format, -1, m.start_us + m.anchor_skip_ms * 1000, AVSEEK_FLAG_BACKWARD);
+      if (m.annexb) av_bsf_flush(m.annexb);
+      if (m.to81) av_bsf_flush(m.to81);
+      m.anchor_skips = kMaxIdrWaitKeyframes;
+      m.anchor_skip_ms = -1;
+      m.anchor_rewind = false;
+      continue;
+    }
     int r = av_read_frame(m.format, packet);
+    if (r == AVERROR_EOF && m.anchor_pending && m.anchor_skip_ms >= 0) {
+      m.anchor_rewind = true;
+      continue;
+    }
     if (r == AVERROR_EOF) {
       pipeline_->pushEOS();
       eos = true;
@@ -1105,18 +1178,26 @@ void Player::FeedLoop() {
       continue;
     }
 
+    bool rpu_dropped = false;
+    int64_t reload_at = -1;
     if (packet->stream_index == m.video && m.to81) {
       // Profile 7 -> 8.1: the RPU (last NAL unit of the access unit) rewritten in place; one packet
       // in, one out, still length-prefixed.
+      if (!m.to81_copy) m.to81_copy = av_packet_alloc();
+      av_packet_unref(m.to81_copy);
+      const bool have_copy = m.to81_copy && av_packet_ref(m.to81_copy, packet) == 0;
       if (av_bsf_send_packet(m.to81, packet) < 0 || av_bsf_receive_packet(m.to81, packet) < 0) {
         if (m.to81_errors++ < 5) LOG("profile 8.1 conversion failed for a packet (pts %" PRId64 ")", packet->pts);
         av_packet_unref(packet);
-        continue;
-      }
-      // FFmpeg's bitstream rewriting writes the access unit back with Annex B start codes; the
-      // conversion below expects the container's length prefixes.
-      if (packet->size > 4 && packet->data[0] == 0 && packet->data[1] == 0 &&
+        av_bsf_flush(m.to81);
+        if (!have_copy) continue;
+        // Feed the picture without its Dolby Vision data rather than lose it, as plx-native does.
+        av_packet_move_ref(packet, m.to81_copy);
+        rpu_dropped = true;
+      } else if (packet->size > 4 && packet->data[0] == 0 && packet->data[1] == 0 &&
           (packet->data[2] == 1 || (packet->data[2] == 0 && packet->data[3] == 1))) {
+        // FFmpeg's bitstream rewriting writes the access unit back with Annex B start codes; the
+        // conversion below expects the container's length prefixes.
         if (!m.to81_annexb_logged) {
           m.to81_annexb_logged = true;
           LOG("profile 8.1 conversion: output has start codes, re-prefixing with %d-byte lengths", m.nal_length_size);
@@ -1168,9 +1249,14 @@ void Player::FeedLoop() {
             if (m.dv_declared && m.is_hevc) {
               int vcl = HevcFirstVclType(out->data, out->size);
               if (vcl != 19 && vcl != 20) {
-                if (m.non_idr_skipped++ < 3) LOG("start/seek: skipping a keyframe of NAL type %d (waiting for an IDR)", vcl);
-                av_packet_unref(out);
-                continue;
+                if (m.anchor_skips < kMaxIdrWaitKeyframes) {
+                  if (m.non_idr_skipped++ < 3) LOG("start/seek: skipping a keyframe of NAL type %d (waiting for an IDR)", vcl);
+                  if (m.anchor_skips++ == 0) m.anchor_skip_ms = std::max<int64_t>(0, ns / 1000000);
+                  if (m.anchor_skips == kMaxIdrWaitKeyframes) m.anchor_rewind = true;
+                  av_packet_unref(out);
+                  continue;
+                }
+                LOG("start/seek: anchoring on a keyframe of NAL type %d", vcl);
               }
             }
             int64_t anchor_ms = std::max<int64_t>(0, ns / 1000000);
@@ -1185,11 +1271,20 @@ void Player::FeedLoop() {
               pts_shift_ns_ = 0;
               position_ns_ = anchor_ms * 1000000;
             }
+            if (!ok) {
+              // A refused Seek leaves the pipeline refusing data; plx-native reloads instead.
+              LOG("seek to %" PRId64 " ms refused; reloading the pipeline there", anchor_ms);
+              av_packet_unref(out);
+              reload_at = anchor_ms;
+              break;
+            }
             m.initial_start = false;
             m.fresh_start = false;
             LOG("anchored at %" PRId64 " ms (%s, shift %" PRId64 " ms)", anchor_ms, ok ? "ok" : "refused",
                 static_cast<int64_t>(pts_shift_ns_ / 1000000));
             m.anchor_pending = false;
+            m.anchor_skips = 0;
+            m.anchor_skip_ms = -1;
             Emit({{"event", "seeked"}, {"position", std::to_string(anchor_ms)}});
           }
           // LG's pipeline rounds fed PTS onto its own frame lattice (to the nearest tick); with the
@@ -1198,8 +1293,9 @@ void Player::FeedLoop() {
           // on the right tick (measured by PlxNative, docs/dolby-vision.md "The fix").
           int size = m.knobs.drop_rpu && av_packet_make_writable(out) == 0 ? StripNalType(out->data, out->size, 62) : out->size;
           if (m.to81 && av_packet_make_writable(out) == 0) {
-            // The profile 7 enhancement layer (NAL type 63) is not decoded by the TV.
-            size = StripNalType(out->data, size, 63);
+            // The TV decodes only the base layer of profile 7.
+            size = StripEnhancementLayer(out->data, size);
+            if (rpu_dropped) size = StripNalType(out->data, size, 62);
           }
           const uint8_t* data = out->data;
           if (m.is_hevc && m.knobs.strip_hdr10plus) {
@@ -1235,6 +1331,7 @@ void Player::FeedLoop() {
             // Prime about a second of pictures before the clock starts, as PlxNative does.
             if (!m.started && ns - m.first_fed_ns >= 1000000000LL) {
               m.started = true;
+              started_ = true;
               if (!paused_) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 pipeline_->Play();
@@ -1244,6 +1341,13 @@ void Player::FeedLoop() {
           }
           release(out);
         }
+      }
+      if (reload_at >= 0) {
+        if (!ReloadPipeline(reload_at)) {
+          av_packet_unref(packet);
+          break;
+        }
+        eos = false;
       }
     } else if (packet->stream_index == m.subtitle && !m.subdec) {
       std::shared_ptr<AssRenderer> ass;
@@ -1295,7 +1399,9 @@ void Player::FeedLoop() {
 }
 
 void Player::PipelineCallback(int type, long long num, const char* str, void* context) {
-  static_cast<Player*>(context)->OnPipelineEvent(type, num, str);
+  auto* ctx = static_cast<CallbackContext*>(context);
+  std::lock_guard<std::mutex> lock(ctx->mutex);
+  if (ctx->player) ctx->player->OnPipelineEvent(type, num, str);
 }
 
 void Player::OnPipelineEvent(int type, long long num, const char* str) {

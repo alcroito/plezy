@@ -7,7 +7,7 @@ test TV (LG G4, webOS 9.2). Read-only review, 2026-11-23. The TV was not reachab
 checked on a device. Symbol checks used webosbrew's firmware inventory
 (webosbrew-toolbox-fw-symbols 0.4.0-1, the database plx-native's `tools/fwcompat.py` uses).
 
-Status column: "fixed in <commit>" once a fix lands; findings marked "TV" need a device test.
+Section E lists the fixes made after the review; section B still needs a TV.
 
 ## A. Found by reading code
 
@@ -64,6 +64,30 @@ Status column: "fixed in <commit>" once a fix lands; findings marked "TV" need a
 - Plezy: HLS and live excluded, transcodes are always HLS, `time-pos` and seeks in source time,
   `_feedFailedUri` prevents a reopen loop.
 - No webOS 24 Dolby Vision pitfall in plx-native's `known-issues.md` or `compatibility.md`.
+
+## E. Fixes made after the review (2026-11-23)
+
+Checked in the VM host test (`scripts/webos/native_player_host_test.sh`, 13 cases, all pass) and by
+building both IPKs; not on a TV.
+
+| # | Change | Checked by |
+| --- | --- | --- |
+| A1 | `Player::Play()` starts LG's clock only after the priming second (`started_`); before that it only clears `paused_` | Test: first `Play` comes after at least 0.9 s of fed video |
+| A2 | Profile 5 (server `doviProfile` or the plugin's `dolbyVision` info): no fallback to LG's player; the source ends with the plugin's error | Code review only |
+| A3 | The plugin's `dispose` replies after the player has unloaded (destructor on a worker thread, reply posted to the platform thread); Plezy awaits it before opening LG's player | Builds; not exercised by the host test (it does not use plugin.cc) |
+| A4 | At most 4 non-IDR keyframes are skipped; then, or at the end of the file, the player goes back to the first skipped keyframe and anchors there | Tests `open_gop_seek` and `open_gop_seek_end` with `dv_p81_opengop.mkv` (CRA keyframes): anchors at 4000 and 8000 ms, before end of stream |
+| A5 | LG's callbacks get a small context object that is cleared at unload and never freed | Code review; all tests |
+| A6 | A failed profile 7 conversion feeds the picture without NAL types 62 and 63 instead of dropping it | Code review only (no sample makes the filter fail) |
+| A7 | A refused `Seek`, or a seek before the clock started, reloads the pipeline at the target | Code review; the fake player never refuses |
+| A8 | A seek after completion re-arms Plezy's listener | Code review only |
+| A9 | `NativePlayerController.dispose` fails a pending `initialize()`; a player opened after dispose is closed at once; no resume after dispose | Code review only |
+| A10 | Frame rate snapped to 24000/1001, 24, 25, 30000/1001, 30, 48000/1001, 48, 50, 60000/1001, 60 when within 0.01 | All tests |
+| A11 | Jellyfin audio `index` is the server's `Index` only (no per-type fallback), so PlayerWebos passes no wrong stream index | Code review only |
+| A12 | Profile 7: NAL type 63 and every NAL unit with `nuh_layer_id > 0` removed | Test `dv_p7_mel` |
+| A13 | Knob comment fixed | |
+| B2 | `setHdrInfo` skipped when Dolby Vision is declared; knob `hdr_info_dv=1` restores it | Test `dv_p81_mp4` |
+
+Not changed: B1, B3-B9 and the rest of A13 need a TV.
 
 ## D. TV test order
 
