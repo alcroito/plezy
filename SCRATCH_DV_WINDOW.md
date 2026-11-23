@@ -78,3 +78,6 @@ behaviour; not measured).
 Fix to make: use `PlatformDispatcher.instance.views.first.physicalSize` as `screenSize` in
 `PlayerWebos._feedScreenSize()` instead of `getSystemInfo` UHD (keep the override file). Until then
 the override file `2880x1620` on the TV gives the right result.
+
+Done in the next commit: `_feedScreenSize()` uses the view's physical size; the getSystemInfo call
+is gone. Not yet tested on the TV (remove the `native_player_window` override file to test it).

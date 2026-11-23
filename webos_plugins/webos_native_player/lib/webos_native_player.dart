@@ -165,8 +165,8 @@ class NativePlayerController extends ValueNotifier<NativePlayerValue> with Widge
   final String url;
   final Duration startAt;
 
-  /// The coordinate space of setExportedWindow's destination: 1920x1080 on webOS 6 (LG C1), the
-  /// panel's 3840x2160 with LG's webOS 24 embedder (LG G4).
+  /// The coordinate space of setExportedWindow's destination: the app surface's physical size
+  /// (1920x1080 on upstream's webOS 6 build, 2880x1620 for Plezy on the LG G4), not the panel's.
   final Size screenSize;
 
   /// FFmpeg stream index of the audio track; null picks the file's default.
