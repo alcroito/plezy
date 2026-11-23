@@ -59,3 +59,22 @@ Notes to continue later. State at commit `5566e94fe` (local only, not pushed). L
   (`WEBOS_DEVICE_NOTES.md` section 5), relaunch, play, read logs over SSH.
 - Reviews and fix history: `WEBOS_DOLBY_VISION_REVIEW.md` (A, B, E, F), `WEBOS_LEGACY_REVIEW.md`.
 - Not done: ether logs on zeus were not checked (server side looked fine).
+
+## Result of the override tests (user, 2026-11-23)
+
+| `native_player_window` | Result |
+| --- | --- |
+| `4320x2430` | Same as 3840x2160 (bar at the top) |
+| `3840x1920` | Bars at the top and on the left: wrong |
+| `2880x1620` | Bars at the top and bottom, same as plx-native: correct |
+
+Conclusion: setExportedWindow's dstRect is in the app's Flutter surface coordinates (physical
+size 2880x1620 = 1920x1080 logical x 1.5), which the compositor stretches over the 4K panel. Larger
+spaces made the picture larger than the screen (pushed down/right). The remaining top/bottom bars
+are letterboxing inside the 3840x2160 video (wider than 16:9 film). srcRect stays 3840x2160 and the
+video plane is scaled by the display hardware, so the picture is still 4K (standard webOS plane
+behaviour; not measured).
+
+Fix to make: use `PlatformDispatcher.instance.views.first.physicalSize` as `screenSize` in
+`PlayerWebos._feedScreenSize()` instead of `getSystemInfo` UHD (keep the override file). Until then
+the override file `2880x1620` on the TV gives the right result.
