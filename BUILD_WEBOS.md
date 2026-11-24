@@ -14,14 +14,17 @@ All webOS plugins (`./webos_plugins/`) and patched third-party dependencies (`./
 
 | webOS Version | Marketing Year | Example TV Models | Required Package | Why? |
 | :--- | :--- | :--- | :--- | :--- |
-| **webOS 25 / webOS 26+** | 2025 / 2026 (or updated 2023/2024 TVs) | LG OLED C5, G5, QNED81 (updated to webOS 25+) | **`com.edde746.plezy_<ver>_arm_webos25-26.ipk`** | Ships natively with `glibc >= 2.38`, `GLIBCXX_3.4.32`, `wl_webos_shell` v2, and `NDL_MediaInitWithWindowId`. |
-| **webOS 24** | 2024 | LG OLED G4, C4, B4, QNED85T | **`com.edde746.plezy_<ver>_arm_webos6-24.ipk`** | Uses `glibc < 2.38`, `wl_webos_shell` v1, and legacy `NDL_MediaInit`. Requires `libwebos_compat32.so` shims. |
-| **webOS 22 / webOS 23** | 2022 / 2023 | LG QNED816RE, OLED C2, C3, G2, G3 | **`com.edde746.plezy_<ver>_arm_webos6-24.ipk`** | Uses `glibc < 2.38`, `/lib/ld-linux.so.3`, `wl_webos_shell` v1, and legacy `NDL_MediaInit`. |
-| **webOS 6.x** | 2021 | LG OLED C1, G1 | **`com.edde746.plezy_<ver>_arm_webos6-24.ipk`** | Requires ELF ABI kernel tag `3.2.0`, `glibc 2.4` symbol forwarding, and Wayland v1 clamping. |
+| **webOS 26** | 2026 | LG TVs on webOS 26 Re:New | **`com.edde746.plezy_<ver>_arm_webos26.ipk`** | Ships natively with `glibc >= 2.38`, `GLIBCXX_3.4.32`, `wl_webos_shell` v2, and `NDL_MediaInitWithWindowId`. Not tested on a TV. |
+| **webOS 24** | 2024 | LG OLED G4, C4, B4, QNED85T | **`com.edde746.plezy_<ver>_arm_webos24.ipk`** | Uses `glibc < 2.38`, `wl_webos_shell` v1, and legacy `NDL_MediaInit`. Requires `libwebos_compat32.so` shims. Verified on webOS 24 (LG G4, webOS 9.2). |
+| **webOS 25** | 2025 | LG OLED C5, G5, QNED81 | untested; try **`com.edde746.plezy_<ver>_arm_webos24.ipk`** | The webos26 package needs `glibc 2.38`, which webOS 25 most likely lacks. |
+| **webOS 23 and older** | 2023 and older | LG OLED C3, G3, C2, G2, C1, G1 | none | The webos24 package needs `glibc` up to 2.35 and does not load (webOS 23 has `glibc 2.31`). See `WEBOS_COMPAT_PATCHING.md` section 7. |
 
 **Rule of Thumb:**
-- If your TV runs **webOS 25 or webOS 26**, install **`com.edde746.plezy_<ver>_arm_webos25-26.ipk`**.
-- If your TV runs **webOS 24 or older** (including 2024 models like the **LG G4 / C4** on webOS 24), or if the `webos25-26` package fails to launch, install **`com.edde746.plezy_<ver>_arm_webos6-24.ipk`**.
+- If your TV runs **webOS 26**, install **`com.edde746.plezy_<ver>_arm_webos26.ipk`**.
+- If your TV runs **webOS 24** (2024 models like the **LG G4 / C4**), install **`com.edde746.plezy_<ver>_arm_webos24.ipk`**.
+- On **webOS 25**, try the webos24 package; the webos26 one most likely fails to load. Neither is tested there.
+- On **webOS 23 or older** neither package loads.
+- Before v2.26.0-webos.9 the packages were called `_webos25-26` and `_webos6-24`.
 - Both packages are packed using **POSIX `ustar` format** (`--format=ustar`) and work with **webOS Dev Manager**, **ares-install**, and **Glasshouse**.
 
 ---
@@ -106,10 +109,10 @@ source scripts/webos/env.sh
 flutter pub get
 flutter-webos build webos --release
 
-# 3. Package both the modern (webos25-26) and compatibility (webos6-24, POSIX ustar) IPKs into ./dist/
+# 3. Package both the modern (webos26) and compatibility (webos24, POSIX ustar) IPKs into ./dist/
 ./scripts/webos/build_32bit_ipk.sh
 ```
 
 Both `.ipk` files will be output to `./dist/` (or a custom directory if you pass `OUT_DIR=/path/to/out ./scripts/webos/build_32bit_ipk.sh`):
-- `dist/com.edde746.plezy_2.26.0_arm_webos25-26.ipk`
-- `dist/com.edde746.plezy_2.26.0_arm_webos6-24.ipk`
+- `dist/com.edde746.plezy_2.26.0_arm_webos26.ipk`
+- `dist/com.edde746.plezy_2.26.0_arm_webos24.ipk`

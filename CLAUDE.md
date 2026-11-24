@@ -22,7 +22,7 @@ hardware video through LG's `NDL_media` and a custom subtitle engine.
 | --- | --- |
 | `BUILD_WEBOS.md` | Author's build guide, toolchain versions, vendored dependencies |
 | `WEBOS_CI.md` | CI workflow, `scripts/webos/ci/*`, cache, releases, Homebrew Channel format |
-| `WEBOS_COMPAT_PATCHING.md` | Why the webOS 6-24 package exists, what the patching does, risks |
+| `WEBOS_COMPAT_PATCHING.md` | Why the webOS 24 package exists, what the patching does, risks |
 | `WEBOS_DEVICE_NOTES.md` | TV access (SSH, Glasshouse), logs, install loop, gotchas, Magic Remote fix, cursor lag (graphics engine failure), memory, debugging techniques (Wayland trace, pointer and key injection, stall measurement, reading LG binaries), Dolby Vision on webOS 24 (why HDR10, options, ether), syncing with the author's branch, release titles in Play Version |
 | `WEBOS_DOLBY_VISION_REVIEW.md` | Review of the Dolby Vision path (webos_native_player) against plx-native: findings, fixes, TV test order |
 | `WEBOS_LEGACY_REVIEW.md` | Older-webOS workarounds compared with the legacy-webos projects; backport candidates |
@@ -33,10 +33,10 @@ hardware video through LG's `NDL_media` and a custom subtitle engine.
 - **LG supports only webOS 26 Re:New.** One NDK (11.2.0, x86_64 Linux only), `webos26` engine
   artifacts only, no engine or embedder source.
 - **Two packages, both 32-bit ARM**, same app id `com.edde746.plezy`:
-  - `_arm_webos25-26.ipk`: unpatched LG output; needs glibc 2.38, so in practice webOS 26 only.
-  - `_arm_webos6-24.ipk`: patched by `scripts/webos/build_32bit_ipk.sh` (compat shim
-    `libwebos_compat32.so`, ELF patching, ustar repack); runs on webOS 24 (glibc 2.35), likely 25,
-    not on webOS 23 or older despite the name.
+  - `_arm_webos26.ipk`: unpatched LG output; needs glibc 2.38, so in practice webOS 26 only.
+  - `_arm_webos24.ipk`: patched by `scripts/webos/build_32bit_ipk.sh` (compat shim
+    `libwebos_compat32.so`, ELF patching, ustar repack); verified on webOS 24 (glibc 2.35), webOS 25
+    untested, does not load on webOS 23 or older. Called `_webos6-24` before v2.26.0-webos.9.
 - **`Platform.isLinux` means webOS in this port.** `lib/mpv/player/player.dart` returns
   `PlayerWebos` on Linux, `PlatformDetector` treats Linux as a TV, and `lib/main.dart` installs webOS
   key/back hooks when `Platform.isLinux`. The desktop Linux build is not a target on this branch.
@@ -111,11 +111,13 @@ network-input socket) keys and pointer, but only with stdin kept open:
   (profile 8.1 MKV, start and resume); seeking, audio switching, next episode, profiles 5 and 7 and
   the fallback are not yet tested on a TV (`WEBOS_DOLBY_VISION_REVIEW.md` section D).
 - Magic Remote pointer: LG's embedder handles pointer input on one Wayland seat only; the runner
-  works around it (`WEBOS_DEVICE_NOTES.md` section 8). Not tested on webOS 25-26.
+  works around it (`WEBOS_DEVICE_NOTES.md` section 8). Not tested on webOS 25 or 26.
 - If showing the Magic Remote cursor makes the whole TV lag, or screenshots hang, check `dmesg` for
   `gfx sync timeout`: the TV's graphics engine has failed and only a full reboot fixes it
   (`WEBOS_DEVICE_NOTES.md` section 9). Not caused by Plezy.
 - Memory is tight on the test TV; Plezy's 250 MB image cache lives in GPU memory
   (`WEBOS_DEVICE_NOTES.md` section 10).
-- The patched package stores app data (including the Plex token) in a world-writable folder; see
-  `WEBOS_COMPAT_PATCHING.md` section 7.
+- The patched package keeps app data (including the Plex token) in `<app dir>/appdata/flutter`
+  (mode 0700) since v2.26.0-webos.9, moved from the old world-writable
+  `/media/developer/temp/plezy_appdata` on first start; not yet verified on a TV
+  (`WEBOS_COMPAT_PATCHING.md` sections 5 and 7).

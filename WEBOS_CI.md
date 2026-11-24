@@ -2,7 +2,7 @@
 
 How `.github/workflows/webos.yml` and the scripts in `scripts/webos/ci/` build the two webOS IPKs
 and publish them for the webOS Homebrew Channel. See `BUILD_WEBOS.md` for the manual build and
-`WEBOS_COMPAT_PATCHING.md` for what the webOS 6-24 package changes.
+`WEBOS_COMPAT_PATCHING.md` for what the webOS 24 package changes.
 
 ## Files
 
@@ -14,7 +14,7 @@ and publish them for the webOS Homebrew Channel. See `BUILD_WEBOS.md` for the ma
 | `scripts/webos/ci/make_homebrew_repo.py` | Writes a Homebrew Channel manifest and repository file per IPK |
 | `scripts/webos/ci/publish.sh` | Generates those files and creates the GitHub release, or updates an existing one |
 | `scripts/webos/env.sh` | Environment for `flutter-webos` and the NDK (sourced by `build.sh`) |
-| `scripts/webos/build_32bit_ipk.sh` | Produces the webOS 6-24 IPK from the unpatched one |
+| `scripts/webos/build_32bit_ipk.sh` | Produces the webOS 24 IPK from the unpatched one |
 
 The workflow only calls scripts, so the same steps run on any Ubuntu x86_64 machine.
 
@@ -32,7 +32,7 @@ Steps, on `ubuntu-24.04`:
 2. Restore the toolchain cache (see "Cache").
 3. `scripts/webos/ci/setup-toolchain.sh`
 4. `scripts/webos/ci/build.sh`
-5. Upload `plezy-webos25-26` and `plezy-webos6-24` as separate artifacts. GitHub still serves each
+5. Upload `plezy-webos26` and `plezy-webos24` as separate artifacts. GitHub still serves each
    as a zip containing the one IPK.
 6. Tag builds only: `scripts/webos/ci/publish.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"` with
    `GH_TOKEN` set to the workflow token. The workflow has `contents: write` for this.
@@ -79,8 +79,12 @@ into `$WORK_DIR/flutter-webos`.
    should leave it unchanged.
 4. `flutter-webos build webos --release`, producing
    `build/webos/arm/release/ipk/com.edde746.plezy_<ver>_arm.ipk`.
-5. `scripts/webos/build_32bit_ipk.sh`, which writes `dist/com.edde746.plezy_<ver>_arm_webos25-26.ipk`
-   (the unpatched IPK) and `dist/com.edde746.plezy_<ver>_arm_webos6-24.ipk`.
+5. `scripts/webos/build_32bit_ipk.sh`, which writes `dist/com.edde746.plezy_<ver>_arm_webos26.ipk`
+   (the unpatched IPK) and `dist/com.edde746.plezy_<ver>_arm_webos24.ipk`. `build.sh` then unpacks the
+   webos24 IPK and fails if any ELF file in it still requires a symbol version listed in
+   `UNSUPPORTED_VERSIONS` of `build_32bit_ipk.sh` (`GLIBC_2.36` and newer, `GLIBCXX_3.4.31` and newer,
+   `CXXABI_1.3.14` and newer). `build_32bit_ipk.sh` itself fails if the `wl_webos_shell` byte pattern in
+   `libflutter_webos_media.so` is not found exactly once.
 
 ## Cache
 
@@ -110,14 +114,15 @@ git push <remote> v2.26.0-webos.2
 
 | Asset | Contents |
 | --- | --- |
-| `com.edde746.plezy_<ver>_arm_webos25-26.ipk` | Unpatched package (webOS 26) |
-| `com.edde746.plezy_<ver>_arm_webos6-24.ipk` | Patched package (webOS 24, likely webOS 25) |
+| `com.edde746.plezy_<ver>_arm_webos26.ipk` | Unpatched package (webOS 26, untested on a TV) |
+| `com.edde746.plezy_<ver>_arm_webos24.ipk` | Patched package (verified on webOS 24, webOS 25 untested) |
 | `plezy-<variant>.manifest.json` | Homebrew Channel manifest per package |
 | `plezy-<variant>.repo.json` | Homebrew Channel repository per package |
+| `plezy-webos6-24.*`, `plezy-webos25-26.*` | Aliases: same content as `plezy-webos24.*` and `plezy-webos26.*`, kept so subscriptions made before v2.26.0-webos.9 keep updating |
 
 If the release already exists (a re-run job, or a tag moved and pushed again), `publish.sh` keeps it
 and replaces the files with `gh release upload --clobber`, one call per package with its IPK,
-manifest and repository file, then refreshes the notes. The release is never deleted, so the
+manifest and repository file (and its alias files), then refreshes the notes. The release is never deleted, so the
 `releases/latest` URLs keep working. A rebuild changes the IPK hashes, so between an IPK and its
 manifest being replaced a client can briefly see a mismatch and reject that install. Assets from an
 earlier upload whose names no longer match (for example after a version change) are not removed.
@@ -125,7 +130,7 @@ earlier upload whose names no longer match (for example after a version change) 
 The release notes list the repository and manifest URL for each package, in the form:
 
 ```
-https://github.com/<owner>/<repo>/releases/latest/download/plezy-webos6-24.repo.json
+https://github.com/<owner>/<repo>/releases/latest/download/plezy-webos24.repo.json
 ```
 
 Users add the repository URL for their TV in the Homebrew Channel or Glasshouse.
@@ -168,7 +173,7 @@ scripts/webos/build_native_player_ffmpeg.sh arm <ffmpeg tarball> <mbedtls tarbal
 ```
 
 then copy the soname files and headers into `webos/ffmpeg/`. Afterwards re-check the glibc and
-libstdc++ requirements of the webOS 6-24 package with `readelf -V` (`WEBOS_COMPAT_PATCHING.md`
+libstdc++ requirements of the webOS 24 package with `readelf -V` (`WEBOS_COMPAT_PATCHING.md`
 section 8). With the plugin the package needs at most `GLIBC_2.35` and `GLIBCXX_3.4.29`: libavutil's
 `fmod@GLIBC_2.38` becomes unversioned through the ELF patching in `build_32bit_ipk.sh`. This
 was derived from static analysis, not checked on a TV.

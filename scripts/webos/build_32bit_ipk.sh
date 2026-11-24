@@ -15,9 +15,9 @@ APP_VER="${APP_VER:-2.26.0}"
 
 mkdir -p "$OUT_DIR"
 
-ORIG_IPK="${ORIG_IPK:-$(find "$REPO_ROOT/build" -name "*.ipk" 2>/dev/null | grep -v -E "(-32bit|_webos6-24|_webos25-26)\.ipk" | head -n 1 || true)}"
+ORIG_IPK="${ORIG_IPK:-$(find "$REPO_ROOT/build" -name "*.ipk" 2>/dev/null | grep -v -E "(-32bit|_webos24|_webos26)\.ipk" | head -n 1 || true)}"
 if [ -z "$ORIG_IPK" ] || [ ! -f "$ORIG_IPK" ]; then
-  ORIG_IPK="$OUT_DIR/com.edde746.plezy_${APP_VER}_arm_webos25-26.ipk"
+  ORIG_IPK="$OUT_DIR/com.edde746.plezy_${APP_VER}_arm_webos26.ipk"
 fi
 
 if [ ! -f "$ORIG_IPK" ]; then
@@ -25,7 +25,7 @@ if [ ! -f "$ORIG_IPK" ]; then
   exit 1
 fi
 
-MODERN_IPK_PATH="$OUT_DIR/com.edde746.plezy_${APP_VER}_arm_webos25-26.ipk"
+MODERN_IPK_PATH="$OUT_DIR/com.edde746.plezy_${APP_VER}_arm_webos26.ipk"
 if [ "$(realpath "$ORIG_IPK")" != "$(realpath "$MODERN_IPK_PATH" 2>/dev/null || echo "")" ]; then
   cp -f "$ORIG_IPK" "$MODERN_IPK_PATH"
 fi
@@ -125,6 +125,8 @@ extern int strncmp(const char *s1, const char *s2, unsigned int n);
 extern int mkdir(const char *pathname, unsigned int mode);
 extern int chmod(const char *pathname, unsigned int mode);
 extern int access(const char *pathname, int mode);
+extern int readlink(const char *pathname, char *buf, unsigned int bufsiz);
+extern int rename(const char *oldpath, const char *newpath);
 
 extern long strtol(const char *nptr, char **endptr, int base);
 extern unsigned long strtoul(const char *nptr, char **endptr, int base);
@@ -157,7 +159,8 @@ static void copy_str(char *dst, const char *src, unsigned int max_len) {
 }
 
 /* ============================================================================
- * Writable FLUTTER_* & XDG_* Redirector for webOS 23 (prisoner user)
+ * FLUTTER_* & XDG_* redirect to a folder the app can write (written for webOS 23's prisoner
+ * user; on webOS 24 the app's own appdata folder is used)
  * ============================================================================ */
 static void *resolve_libc_sym(const char *name) {
     static void *libc_handle = 0;
@@ -178,22 +181,88 @@ static void make_dir_writable(const char *p) {
     chmod(p, 0777);
 }
 
+/* dst = a + b, truncated to max_len. */
+static void join_path(char *dst, unsigned int max_len, const char *a, const char *b) {
+    unsigned int i = 0;
+    while (a && *a && i + 1 < max_len) dst[i++] = *a++;
+    while (b && *b && i + 1 < max_len) dst[i++] = *b++;
+    dst[i] = '\\0';
+}
+
+#define PLEZY_OLD_DATA_DIR "/media/developer/temp/plezy_appdata"
+
+/* The app's own folder, <app dir>/appdata/flutter, readable only by the app's user. It survives
+ * reinstalls on the G4 (webOS 24) and replaces the world-writable folder below; the data there
+ * (settings, Plex token) is moved over once. 0 when it cannot be used. */
+static const char *get_app_owned_data_dir(void) {
+    static char dir[512];
+    static int done = 0;
+    char exe[512];
+    char appdata[512];
+    int n, i, slash = -1;
+    if (done) return dir[0] ? dir : 0;
+    done = 1;
+    dir[0] = '\\0';
+    n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) return 0;
+    exe[n] = '\\0';
+    for (i = 0; i < n; ++i) {
+        if (exe[i] == '/') slash = i;
+    }
+    if (slash <= 0) return 0;
+    exe[slash] = '\\0';
+    join_path(appdata, sizeof appdata, exe, "/appdata");
+    mkdir(appdata, 0755);
+    if (access(appdata, 7) != 0) return 0;
+    join_path(dir, sizeof dir, appdata, "/flutter");
+    if (access(dir, 0) != 0) {
+        if (access(PLEZY_OLD_DATA_DIR, 0) != 0 || rename(PLEZY_OLD_DATA_DIR, dir) != 0) mkdir(dir, 0700);
+    }
+    chmod(dir, 0700);
+    if (access(dir, 7) != 0) {
+        dir[0] = '\\0';
+        return 0;
+    }
+    return dir;
+}
+
+static void make_private_dir(const char *base, const char *sub) {
+    char p[512];
+    join_path(p, sizeof p, base, sub);
+    mkdir(p, 0700);
+}
+
 static const char *get_writable_appdata_dir(void) {
     static const char *cached_dir = 0;
+    const char *own;
     if (cached_dir) return cached_dir;
 
+    own = get_app_owned_data_dir();
+    if (own) {
+        make_private_dir(own, "/com.edde746.plezy");
+        make_private_dir(own, "/.cache");
+        make_private_dir(own, "/.cache/com.edde746.plezy");
+        make_private_dir(own, "/.data");
+        make_private_dir(own, "/.data/com.edde746.plezy");
+        make_private_dir(own, "/.download");
+        make_private_dir(own, "/.download/com.edde746.plezy");
+        make_private_dir(own, "/log");
+        cached_dir = own;
+        return cached_dir;
+    }
+
     make_dir_writable("/media/developer/temp");
-    make_dir_writable("/media/developer/temp/plezy_appdata");
-    if (access("/media/developer/temp/plezy_appdata", 7) == 0) {
-        make_dir_writable("/media/developer/temp/plezy_appdata/com.edde746.plezy");
-        make_dir_writable("/media/developer/temp/plezy_appdata/.cache");
-        make_dir_writable("/media/developer/temp/plezy_appdata/.cache/com.edde746.plezy");
-        make_dir_writable("/media/developer/temp/plezy_appdata/.data");
-        make_dir_writable("/media/developer/temp/plezy_appdata/.data/com.edde746.plezy");
-        make_dir_writable("/media/developer/temp/plezy_appdata/.download");
-        make_dir_writable("/media/developer/temp/plezy_appdata/.download/com.edde746.plezy");
-        make_dir_writable("/media/developer/temp/plezy_appdata/log");
-        cached_dir = "/media/developer/temp/plezy_appdata";
+    make_dir_writable(PLEZY_OLD_DATA_DIR);
+    if (access(PLEZY_OLD_DATA_DIR, 7) == 0) {
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/com.edde746.plezy");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/.cache");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/.cache/com.edde746.plezy");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/.data");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/.data/com.edde746.plezy");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/.download");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/.download/com.edde746.plezy");
+        make_dir_writable(PLEZY_OLD_DATA_DIR "/log");
+        cached_dir = PLEZY_OLD_DATA_DIR;
         return cached_dir;
     }
 
@@ -210,28 +279,24 @@ static const char *get_writable_appdata_dir(void) {
     return cached_dir;
 }
 
+static const char *get_writable_sub_dir(char *buf, unsigned int len, const char *sub) {
+    if (!buf[0]) join_path(buf, len, get_writable_appdata_dir(), sub);
+    return buf;
+}
+
 static const char *get_writable_cache_dir(void) {
-    const char *base = get_writable_appdata_dir();
-    if (strcmp(base, "/media/developer/temp/plezy_appdata") == 0) {
-        return "/media/developer/temp/plezy_appdata/.cache";
-    }
-    return "/tmp/plezy_appdata/.cache";
+    static char p[512];
+    return get_writable_sub_dir(p, sizeof p, "/.cache");
 }
 
 static const char *get_writable_download_dir(void) {
-    const char *base = get_writable_appdata_dir();
-    if (strcmp(base, "/media/developer/temp/plezy_appdata") == 0) {
-        return "/media/developer/temp/plezy_appdata/.download";
-    }
-    return "/tmp/plezy_appdata/.download";
+    static char p[512];
+    return get_writable_sub_dir(p, sizeof p, "/.download");
 }
 
 static const char *get_writable_log_dir(void) {
-    const char *base = get_writable_appdata_dir();
-    if (strcmp(base, "/media/developer/temp/plezy_appdata") == 0) {
-        return "/media/developer/temp/plezy_appdata/log";
-    }
-    return "/tmp/plezy_appdata/log";
+    static char p[512];
+    return get_writable_sub_dir(p, sizeof p, "/log");
 }
 
 static const char *map_env_var(const char *name) {
@@ -635,8 +700,13 @@ if media_so.is_file():
         mdata[idx:idx+len(sig_v2)] = sig_v1
         media_so.write_bytes(mdata)
         print(f"  -> WebOSSurface::WebOSSurface wl_webos_shell v2->v1 gepatcht an File-Offset 0x{idx:x}!")
-    elif mdata.count(sig_v1) == 1:
+    elif cnt == 0 and mdata.count(sig_v1) == 1:
         print("  -> WebOSSurface::WebOSSurface war bereits auf v1 gepatcht.")
+    else:
+        print(f"ERROR: wl_webos_shell signature not found exactly once in {media_so.name} "
+              f"(v2: {cnt}, v1: {mdata.count(sig_v1)}); the engine library changed, redo the patch",
+              file=sys.stderr)
+        sys.exit(1)
 
 UNSUPPORTED_VERSIONS = {
     "GLIBC_2.36", "GLIBC_2.37", "GLIBC_2.38", "GLIBC_2.39",
@@ -742,7 +812,7 @@ PYEOF
 rm -rf "$APP_DIR/appdata/"* "$APP_DIR/appdata/".* 2>/dev/null || true
 chmod 0777 "$APP_DIR/appdata" 2>/dev/null || true
 
-echo "=== [5/5] Baue kompatibles Paket (POSIX ustar): com.edde746.plezy_${APP_VER}_arm_webos6-24.ipk ==="
+echo "=== [5/5] Baue kompatibles Paket (POSIX ustar): com.edde746.plezy_${APP_VER}_arm_webos24.ipk ==="
 cd "$STAGE_DIR/data_extract"
 tar --format=ustar --numeric-owner --owner=0 --group=0 -czf "$STAGE_DIR/ipk_extract/data.tar.gz" ./usr
 
@@ -751,7 +821,7 @@ cd "$STAGE_DIR/ctrl_extract"
 tar -xzf "$STAGE_DIR/ipk_extract/control.tar.gz"
 tar --format=ustar --numeric-owner --owner=0 --group=0 -czf "$STAGE_DIR/ipk_extract/control.tar.gz" .
 
-OUT_COMPAT_PATH="$OUT_DIR/com.edde746.plezy_${APP_VER}_arm_webos6-24.ipk"
+OUT_COMPAT_PATH="$OUT_DIR/com.edde746.plezy_${APP_VER}_arm_webos24.ipk"
 
 cd "$STAGE_DIR/ipk_extract"
 rm -f "$OUT_COMPAT_PATH"

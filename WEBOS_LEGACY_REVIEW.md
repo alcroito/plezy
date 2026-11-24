@@ -1,7 +1,7 @@
 # Older webOS support: comparison with the legacy-webos projects
 
-Review of how Plezy makes LG's webOS 26 Flutter build run on older webOS (the `_arm_webos6-24.ipk`
-package, `WEBOS_COMPAT_PATCHING.md`) against the projects of Webos-Flutter-Legacy-TV, which solve
+Review of how Plezy makes LG's webOS 26 Flutter build run on older webOS (the `_arm_webos24.ipk`
+package, called `_webos6-24` at the time of the review, `WEBOS_COMPAT_PATCHING.md`) against the projects of Webos-Flutter-Legacy-TV, which solve
 the same problem. Read-only review of source and docs, 2026-11-23. Nothing here was tested on a TV.
 "Code" means read in source; "docs" means only claimed in their README or changelog.
 
@@ -85,14 +85,16 @@ Revisions read:
 
 | # | What | Benefit | Effort | Risk | TV needed |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Remove the app data redirect (`build_32bit_ipk.sh:159-310`), use the app's own `appdata/`, with a one-time copy of `/media/developer/temp/plezy_appdata` at startup (Dart, Linux only) | Token and settings no longer world-writable; no data loss in `/tmp` | S | M (existing users' data must be copied or they sign in again) | Yes: persistence across reboot and update |
-| 2 | Fail `build_32bit_ipk.sh` when neither `wl_webos_shell` signature matches (`:633-639`); add a `readelf -V` / package check to `scripts/webos/ci/build.sh` | Catches silently broken packages after an engine update | S | Low | No |
+| 1 (done differently) | Remove the app data redirect (`build_32bit_ipk.sh:159-310`), use the app's own `appdata/`, with a one-time copy of `/media/developer/temp/plezy_appdata` at startup (Dart, Linux only) | Token and settings no longer world-writable; no data loss in `/tmp` | S | M (existing users' data must be copied or they sign in again) | Yes: persistence across reboot and update |
+| 2 (done) | Fail `build_32bit_ipk.sh` when neither `wl_webos_shell` signature matches (`:633-639`); add a `readelf -V` / package check to `scripts/webos/ci/build.sh` | Catches silently broken packages after an engine update | S | Low | No |
 | 3 | Replace the byte patch and prefix clamp with a clamp at `wl_registry.bind` to the advertised version, in the runner's `wl_proxy_marshal_flags` plus a `wl_registry` listener wrapper; then drop the compat library's Wayland wrappers (`:312-408`) and the byte patch | Removes the 8-argument limit and the wrong `a2` overwrite; no effect on webOS 26 | M | M (Wayland code shared with the webOS 26 package) | Yes |
 | 4 | Move the SDL stubs into their own `libSDL2-2.0.so.0`-named library with a placeholder window id; first log whether NDL calls them on the G4 | Correct if NDL resolves SDL through `dlopen` | S-M | Low-M | Yes |
 | 5 | Try Impeller (`"enable-impeller": true` in `flutter-conf.json`) | Their docs: about half the GPU time on webOS 6 | S to try | M (video hole, subtitle engine, native player) | Yes |
 | 6 | Replace Plezy's patching with legacy-webos's bundled-glibc packager | webOS 22/23 (C2/C3/G2/G3), likely 25; real versioned symbols | L | H (pointer events handled twice with the runner fix, their Back mapping, dual-surface default, about 15 MB more, LGPL source offer, absolute loader path) | Yes (G4 and a webOS 22/23 TV); only if those TVs matter |
-| 7 | Rename packages to `_webos26` and `_webos-legacy` (or `_webos24-25`); the current name claims support that does not exist | Correct expectations | S | Low (CI, Homebrew Channel files, release notes change together) | No |
+| 7 (done: `_webos24` and `_webos26`, old Homebrew Channel names kept as aliases) | Rename packages to `_webos26` and `_webos-legacy` (or `_webos24-25`); the old name claims support that does not exist | Correct expectations | S | Low (CI, Homebrew Channel files, release notes change together) | No |
 | 8 | Scroll a row while the pointer rests at its end (idea from jellyfin-flutter, written fresh) | Pointer UX | M | Low | Yes |
+
+Item 1 as done (v2.26.0-webos.9): the redirect stays, but points at `<app dir>/appdata/flutter` (mode 0700), and the shim moves the old folder there with `rename()` on the first start; the old folder stays the fallback. This keeps the data where the embedder already expects it to be redirected, so nothing changes for the app. Tested on x86 only.
 
 Do not backport: their dual-surface EGL wrapping (Mali-specific, measured on a C1 only), Widevine
 L1 (research only, unlicensed; Plezy has no DRM), webOS 3/4 extras (untested), their `popRoute`
@@ -105,5 +107,5 @@ video_player fixes unless Plezy shows the same symptoms, any jellyfin-flutter co
   matters below webOS 24).
 - `lib/main.dart:362-367` sends `setBackPolicy` from a per-frame callback and a 200 ms timer, also
   when nothing changed. Not measured.
-- `BUILD_WEBOS.md:19` tells webOS 22/23 users to install the `webos6-24` package, which contradicts
-  `WEBOS_COMPAT_PATCHING.md` section 7.
+- `BUILD_WEBOS.md:19` told webOS 22/23 users to install the `webos6-24` package, which contradicted
+  `WEBOS_COMPAT_PATCHING.md` section 7. Fixed.

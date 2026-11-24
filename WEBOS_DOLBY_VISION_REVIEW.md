@@ -48,7 +48,7 @@ fixes; section B still needs a TV.
   (23.20.50.01, not the G4's exact build), and on 6.4.0 and 10.2.0. Mangled names match
   plx-native (`src/starfish.c:20-21, 69-95, 133-134`); both reserve 64 KB for the object
   (`SMP_STORAGE_SIZE 65536`); plx-native also uses `dlsym`.
-- Patched webOS 6-24 package: plugin needs at most GLIBC_2.35 and GLIBCXX_3.4.29, no DT_NEEDED on
+- Patched webOS 24 package: plugin needs at most GLIBC_2.35 and GLIBCXX_3.4.29, no DT_NEEDED on
   libplayerAPIs; FFmpeg libraries at most GLIBC_2.35.
 - Load payload: `DolbyHdrInfo {"trackType":"single","encryptionType":"clear","profileId":<int>}`
   inside `contents`, codec "H265", profile 7 declared as 8 (`lib.rs:582-608`,

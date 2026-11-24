@@ -1,6 +1,6 @@
-# webOS Compatibility Patching (webOS 6-24 Package)
+# webOS Compatibility Patching (webOS 24 Package)
 
-Background on why the `_arm_webos6-24.ipk` package exists, what `scripts/webos/build_32bit_ipk.sh`
+Background on why the `_arm_webos24.ipk` package exists (called `_webos6-24` before v2.26.0-webos.9), what `scripts/webos/build_32bit_ipk.sh`
 changes, how the missing video function is handled, and the known risks. See `BUILD_WEBOS.md` for
 build steps.
 
@@ -19,7 +19,7 @@ That data has one firmware dump per release, from one TV model each, so other mo
 - LG does not publish source for its webOS engine or embedder, so they cannot be rebuilt against an
   older system.
 
-The unpatched build (`_arm_webos25-26.ipk`) is LG's standard output. It links against the NDK's
+The unpatched build (`_arm_webos26.ipk`) is LG's standard output. It links against the NDK's
 glibc 2.39 and GCC 13 libstdc++, and needs functions that only newer firmware has.
 
 ## 2. Both packages are 32-bit ARM
@@ -79,8 +79,12 @@ It unpacks the unpatched IPK and patches it after the build:
   `NDL_MediaSelectAudioTrack`, `NDL_MediaSetPlayRate`, plus SDL window functions. See section 6.
 - **App data paths:** replaces `getenv` and `setenv` for the whole process and redirects
   `FLUTTER_HOME`, `FLUTTER_APPDATA_HOME`, `FLUTTER_TEMP_HOME`, `FLUTTER_DOWNLOAD_HOME`,
-  `FLUTTER_EXT_STORAGE_PATH`, `FLUTTER_APP_LOG_PATH` and `XDG_*` to
-  `/media/developer/temp/plezy_appdata`, falling back to `/tmp/plezy_appdata`.
+  `FLUTTER_EXT_STORAGE_PATH`, `FLUTTER_APP_LOG_PATH` and `XDG_*` to `<app dir>/appdata/flutter`
+  (mode `0700`; the app's own folder, which survives reinstalls on the G4). On the first start it
+  moves the old `/media/developer/temp/plezy_appdata` there (settings, databases, Plex token), with
+  `rename()`. Only if the app folder cannot be used does it fall back to the old world-writable
+  `/media/developer/temp/plezy_appdata`, then `/tmp/plezy_appdata`. Before v2.26.0-webos.9 the
+  data always went to `/media/developer/temp/plezy_appdata`.
 
 ## 6. How the missing video function is handled
 
@@ -113,20 +117,23 @@ window. webOS 24 and 25 do not have it.
   `NDL_MediaUnsubscribeEvents` that protection is gone. The plugin's own event routing is still
   safe (`dispatchEvent` checks the slot table under a mutex); the risk is an occasional crash
   inside LG's library when the player closes.
-- **App data security and persistence.** The redirected data folders are created with mode `0777`
-  in a Developer Mode temp folder, so settings and the Plex token are world-writable. If
-  `/media/developer/temp` is not usable, data goes to `/tmp` and is lost on reboot. The
-  redirection applies on every TV, including those where the normal app folder works.
-- **Package label overstates support.** The patched package still needs glibc up to 2.35:
+- **App data security and persistence.** Since v2.26.0-webos.9 the data is in
+  `<app dir>/appdata/flutter` with mode `0700` (the move from the old folder was tested on x86 only,
+  not yet on a TV). If the app folder is not usable, the old behaviour remains: folders with mode
+  `0777` in a Developer Mode temp folder (world-writable settings and Plex token), or `/tmp`, lost
+  on reboot. The redirection still applies on every TV, including those where the normal app
+  folder works.
+- **Package support range.** The package was named `webos6-24` before v2.26.0-webos.9, which overstated it. The patched package still needs glibc up to 2.35:
   `libflutter_engine.so` needs `GLIBC_2.32` to `GLIBC_2.35`, and the executable,
   `libflutter_webos_media.so` and `libvideo_player_webos_plugin.so` need `GLIBC_2.32` to
   `GLIBC_2.34`. webOS 24 (glibc 2.35) is fine. webOS 23 (8.3.0, glibc 2.31) and older are expected
-  to fail at load despite the `webos6-24` name.
-- **The webOS 25-26 label.** The 10.2.0 data lacks glibc 2.38 functions and
-  `NDL_MediaInitWithWindowId`, so webOS 25 most likely needs the `webos6-24` package as well.
+  to fail at load.
+- **webOS 25.** The 10.2.0 data lacks glibc 2.38 functions and
+  `NDL_MediaInitWithWindowId`, so webOS 25 most likely needs the `webos24` package, not `webos26`.
+  Untested.
 - **Engine updates can break the patch silently.** The `wl_webos_shell` patch searches for an exact
-  byte sequence. If an LG engine update changes it, the script skips the patch without an error and
-  produces a package that fails at window creation on older TVs.
+  byte sequence. If an LG engine update changes it, the script now stops with an error (before, it
+  skipped the patch and produced a package that fails at window creation on older TVs).
 - **Wayland version cap.** If the engine uses a version 2 feature on a capped `wl_webos_*` object,
   the compositor disconnects the app. The Wayland wrappers also forward a fixed eight arguments,
   enough for the messages in use but not for longer ones.
@@ -157,7 +164,8 @@ its firmware data.
 4. Opening and closing the player repeatedly does not crash.
 5. Audio and subtitle track switching works.
 
-Logs: `/media/developer/temp/plezy_appdata/log`.
+Logs: `<app dir>/appdata/plezy_runtime.log` and `plezy_native.log` (`WEBOS_DEVICE_NOTES.md`
+section 4); the redirected `log` folder (`<app dir>/appdata/flutter/log`) stays empty in practice.
 
 ## 10. Alternatives to patching
 

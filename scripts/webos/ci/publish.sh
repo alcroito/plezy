@@ -19,10 +19,12 @@ Homebrew Channel: add the repository URL for your TV in the Homebrew Channel set
 
 | TV | Package | Homebrew Channel repository | Manifest |
 | --- | --- | --- | --- |
-| webOS 26 | \`com.edde746.plezy_*_arm_webos25-26.ipk\` | $latest/plezy-webos25-26.repo.json | $latest/plezy-webos25-26.manifest.json |
-| webOS 24, or webOS 25 if the other package does not start | \`com.edde746.plezy_*_arm_webos6-24.ipk\` | $latest/plezy-webos6-24.repo.json | $latest/plezy-webos6-24.manifest.json |
+| webOS 26 | \`com.edde746.plezy_*_arm_webos26.ipk\` | $latest/plezy-webos26.repo.json | $latest/plezy-webos26.manifest.json |
+| webOS 24 (verified on webOS 24; webOS 25 is untested, try this one first) | \`com.edde746.plezy_*_arm_webos24.ipk\` | $latest/plezy-webos24.repo.json | $latest/plezy-webos24.manifest.json |
 
-The webOS 6-24 package still needs glibc 2.35, so TVs older than webOS 24 are unlikely to run it.
+The webOS 24 package needs glibc 2.35 and does not load on webOS 23 or older. The webOS 26 package needs glibc 2.38.
+
+Before v2.26.0-webos.9 the packages were called webos6-24 and webos25-26. The old plezy-webos6-24.* and plezy-webos25-26.* files are still published with the same content as webos24 and webos26, so existing Homebrew Channel and Glasshouse subscriptions keep working.
 
 The manifests carry the SHA-256 of each IPK, which the Homebrew Channel checks before installing."
 
@@ -38,7 +40,15 @@ fi
 for ipk in "$DIST"/*_arm_*.ipk; do
   variant="${ipk%.ipk}"
   variant="${variant##*_arm_}"
-  gh release upload "$TAG" --repo "$REPO" --clobber \
-    "$ipk" "$DIST/plezy-$variant.manifest.json" "$DIST/plezy-$variant.repo.json"
+  files=("$ipk" "$DIST/plezy-$variant.manifest.json" "$DIST/plezy-$variant.repo.json")
+  case "$variant" in
+    webos24) old=webos6-24 ;;
+    webos26) old=webos25-26 ;;
+    *) old= ;;
+  esac
+  if [ -n "$old" ]; then
+    files+=("$DIST/plezy-$old.manifest.json" "$DIST/plezy-$old.repo.json")
+  fi
+  gh release upload "$TAG" --repo "$REPO" --clobber "${files[@]}"
 done
 gh release edit "$TAG" --repo "$REPO" --title "$TAG" --notes "$notes"

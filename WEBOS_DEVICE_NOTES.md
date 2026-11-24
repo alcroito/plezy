@@ -1,7 +1,7 @@
 # webOS Device Notes: Connecting, Installing, Logs, Gotchas, Magic Remote, Debugging
 
 Practical notes from working on a real TV. Related docs: `BUILD_WEBOS.md` (manual build),
-`WEBOS_CI.md` (CI and releases), `WEBOS_COMPAT_PATCHING.md` (the webOS 6-24 package).
+`WEBOS_CI.md` (CI and releases), `WEBOS_COMPAT_PATCHING.md` (the webOS 24 package).
 
 Examples below use `$TV` for the TV's IP address and `<path-to-checkout>` for this repository's
 location. Local values belong in `CLAUDE.local.md` (not committed).
@@ -14,7 +14,7 @@ location. Local values belong in `CLAUDE.local.md` (not committed).
 | webOS | 9.2.0 (`ombre-okapi`), webOS 24 |
 | Userland | 32-bit ARM (`lib32`) on an `aarch64` kernel |
 | Access | Rooted with the webOS Homebrew Channel; root SSH on port 22 |
-| Package to install | `com.edde746.plezy_<ver>_arm_webos6-24.ipk` (the webOS 25-26 one does not start) |
+| Package to install | `com.edde746.plezy_<ver>_arm_webos24.ipk` (the webos26 one does not start) |
 
 Developer Mode SSH (`prisoner@$TV -p 9922`) was refused on this TV; root SSH is what works.
 
@@ -42,8 +42,8 @@ ssh root@$TV 'cat /var/run/nyx/os_info.json; uname -m'
 | --- | --- |
 | `/media/developer/apps/usr/palm/applications/com.edde746.plezy/` | Installed app: `plezy`, `lib/`, `data/`, `appinfo.json` |
 | `.../com.edde746.plezy/appdata/plezy_runtime.log` | **App log**, written by `lib/utils/app_logger.dart`; survives reinstalls |
-| `/media/developer/temp/plezy_appdata/` | App data redirected by `libwebos_compat32.so` (settings, databases, image cache); mode `0777` |
-| `/media/developer/temp/plezy_appdata/log/` | Empty in practice; the app log goes to `plezy_runtime.log` instead |
+| `<app dir>/appdata/flutter/` | App data redirected by `libwebos_compat32.so` (settings, databases, image cache); mode `0700`, since v2.26.0-webos.9 |
+| `/media/developer/temp/plezy_appdata/` | The old app data folder (mode `0777`), moved to `appdata/flutter` on the first start of v2.26.0-webos.9 |
 | `/var/log/messages` | System log: compositor, remote input, the Flutter embedder's own lines; rotated often (`messages.0.gz` ...) |
 
 Check the running process:
@@ -105,7 +105,7 @@ test TV).
 
 ```bash
 GH=http://$TV:8080
-IPK=dist/com.edde746.plezy_2.26.0_arm_webos6-24.ipk
+IPK=dist/com.edde746.plezy_2.26.0_arm_webos24.ipk
 
 # 1. Upload; the job goes to "verifying", then "awaiting-confirm"
 curl -sS -X POST -H 'Content-Type: application/octet-stream' --data-binary @"$IPK" $GH/api/apps/install/upload
@@ -126,16 +126,16 @@ A same-version reinstall works (`direction: same`). Installing replaces a runnin
 again afterwards. Launching also works without Glasshouse, with `luna-send` over SSH (section 11).
 
 Glasshouse can also subscribe to a Homebrew Channel repository, for example
-`https://github.com/alcroito/plezy/releases/latest/download/plezy-webos6-24.repo.json`
-(see `WEBOS_CI.md`). After a catalog changes, refresh or re-add it; Glasshouse caches catalogs.
+`https://github.com/alcroito/plezy/releases/latest/download/plezy-webos24.repo.json`
+(see `WEBOS_CI.md`; the old `plezy-webos6-24.repo.json` name still works as an alias). After a catalog changes, refresh or re-add it; Glasshouse caches catalogs.
 
 To install a published release instead of a local build, download its IPK and check it against the
 release's manifest before uploading:
 
 ```bash
-gh release download <tag> -R alcroito/plezy -p '*_arm_webos6-24.ipk' -p 'plezy-webos6-24.manifest.json'
-python3 -c 'import json;print(json.load(open("plezy-webos6-24.manifest.json"))["ipkHash"]["sha256"])'
-shasum -a 256 com.edde746.plezy_*_arm_webos6-24.ipk   # must match, then upload as in step 1
+gh release download <tag> -R alcroito/plezy -p '*_arm_webos24.ipk' -p 'plezy-webos24.manifest.json'
+python3 -c 'import json;print(json.load(open("plezy-webos24.manifest.json"))["ipkHash"]["sha256"])'
+shasum -a 256 com.edde746.plezy_*_arm_webos24.ipk   # must match, then upload as in step 1
 ```
 
 To check an IPK the way Glasshouse will, with a local Glasshouse checkout:
@@ -153,7 +153,7 @@ same path.
 orb -m ubuntu bash -lc 'export PATH=$HOME/bin:$PATH
   cd <path-to-checkout>
   scripts/webos/ci/build.sh > /tmp/b.log 2>&1; echo rc=$?'
-# then install dist/*_arm_webos6-24.ipk with the Glasshouse steps above
+# then install dist/*_arm_webos24.ipk with the Glasshouse steps above
 ```
 
 An incremental build takes about 2 minutes when Dart code changed, about 15 s when only the runner
@@ -245,7 +245,7 @@ embedder's calls reach these instead of libwayland-client's.
   `WebOSSurfaceItem::setCursorSurface` and draws the app's surface instead of the system cursor.
   The override drops that request, so the TV's own cursor stays. Plezy cannot change the cursor
   shape as a result.
-- All other requests are forwarded to the next `wl_proxy_marshal_flags` (the webOS 6-24 shim's, then
+- All other requests are forwarded to the next `wl_proxy_marshal_flags` (the webOS 24 shim's, then
   libwayland's). The variadic arguments are read back using the request's signature from the
   proxy's `wl_interface` (each argument fits a `uintptr_t`) and passed on explicitly.
 - Dropping `set_cursor` is not needed for performance (the cursor lag in section 9 had another
@@ -261,7 +261,7 @@ Verified on the G4 (webOS 24 package):
 - The Magic Remote and Glasshouse's network input use different seats, each with its own position.
   Both now reach Flutter as device 0, so using both at once makes the pointer jump between them.
 
-Not tested: the webOS 25-26 package (no webOS 26 TV available). Known limitation: if the compositor
+Not tested: the webos26 package (no webOS 26 TV available). Known limitation: if the compositor
 removes a seat at runtime, the recorded seat is stale; it is only used again if the embedder attaches
 a new pointer listener.
 
@@ -276,7 +276,7 @@ a new pointer listener.
 - **The 1.5x scale.** With `force_scale_factor` the surface is 2880x1620 and LSM places its item at
   `-480,-270` (centered on the 1920x1080 output). With the scale disabled (1920x1080 at `0,0`) clicks
   still did not arrive.
-- **The webOS 6-24 compat shim.** It wraps `wl_proxy_marshal_flags` (version clamp for webOS 23) but
+- **The webOS 24 compat shim.** It wraps `wl_proxy_marshal_flags` (version clamp for webOS 23) but
   does not touch events; the unpatched template showed the same behavior.
 - **Window properties, `wl_starfish_pointer`, `wl_webos_xinput`.** LG's SDL2 sets more shell surface
   properties (`_WEBOS_WINDOW_TYPE`, `title`, `cursor_fps`, ...) and binds `wl_starfish_pointer`, but

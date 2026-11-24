@@ -3,7 +3,11 @@
 
 Both IPKs share one app id, and a Homebrew Channel repository lists an id once, so every IPK
 gets its own repository: <prefix>-<variant>.repo.json, where the variant is the IPK name's
-suffix after "_arm_" (webos6-24, webos25-26).
+suffix after "_arm_" (webos24, webos26).
+
+The packages used to be called webos6-24 and webos25-26. Existing subscriptions follow those repository
+URLs, so ALIASES also writes the same content under the old names; the old repository file points at
+the old manifest name, which holds the manifest of the new IPK.
 
 The manifest fields match webosbrew-gen-manifest. URLs point at the GitHub release <tag> of
 <repo>; the repository's manifestUrl uses releases/latest so a channel subscription follows
@@ -17,6 +21,9 @@ import re
 import sys
 import tarfile
 from pathlib import Path
+
+
+ALIASES = {"webos24": "webos6-24", "webos26": "webos25-26"}
 
 
 def ar_members(data: bytes) -> dict:
@@ -85,22 +92,23 @@ def main() -> int:
         variant = ipk.stem.rsplit("_arm_", 1)[1]
         manifest = manifest_for(ipk, icon_uri, base,
                                 f"{base}/releases/download/{args.tag}/{ipk.name}")
-        manifest_name = f"{args.prefix}-{variant}.manifest.json"
         title = f"{manifest['title']} ({variant.replace('webos', 'webOS ')})"
-        # The manifest is embedded as well as linked: Glasshouse only lists entries carrying it inline.
-        index = {
-            "paging": {"page": 1, "count": 1, "maxPage": 1, "itemsTotal": 1},
-            "packages": [{
-                "id": manifest["id"],
-                "title": title,
-                "shortDescription": f"Plex client for webOS TVs, {variant.replace('webos', 'webOS ')} build",
-                "iconUri": icon_uri,
-                "manifestUrl": f"{base}/releases/latest/download/{manifest_name}",
-                "manifest": manifest,
-            }],
-        }
-        (args.dist / manifest_name).write_text(json.dumps(manifest, indent=2) + "\n")
-        (args.dist / f"{args.prefix}-{variant}.repo.json").write_text(json.dumps(index, indent=2) + "\n")
+        for name in [variant] + ([ALIASES[variant]] if variant in ALIASES else []):
+            manifest_name = f"{args.prefix}-{name}.manifest.json"
+            # The manifest is embedded as well as linked: Glasshouse only lists entries carrying it inline.
+            index = {
+                "paging": {"page": 1, "count": 1, "maxPage": 1, "itemsTotal": 1},
+                "packages": [{
+                    "id": manifest["id"],
+                    "title": title,
+                    "shortDescription": f"Plex client for webOS TVs, {variant.replace('webos', 'webOS ')} build",
+                    "iconUri": icon_uri,
+                    "manifestUrl": f"{base}/releases/latest/download/{manifest_name}",
+                    "manifest": manifest,
+                }],
+            }
+            (args.dist / manifest_name).write_text(json.dumps(manifest, indent=2) + "\n")
+            (args.dist / f"{args.prefix}-{name}.repo.json").write_text(json.dumps(index, indent=2) + "\n")
         print(f"{ipk.name}: {manifest['id']} {manifest['version']} sha256 {manifest['ipkHash']['sha256']}")
     return 0
 
