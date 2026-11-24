@@ -557,11 +557,36 @@ stream; plx-native saw a TV switch into Dolby Vision mode over an HDR10 decode.
    demuxes, LG's pipeline decodes); see "Option 4 as implemented" below.
 5. **webOS 26 update**: its MKV reader handles Dolby Vision (Profile 7 still plays as HDR10).
 
-### Option 4 as implemented (verified in the VM only, not on a TV)
+### Option 4 as implemented
 
-Nothing here has run on a TV. The VM host test (`scripts/webos/native_player_host_test.sh`, 14
-cases) checks the plugin against a fake `libplayerAPIs.so.1`, so the Load payload, the fed streams
-and seeking are checked, but not whether the TV shows Dolby Vision.
+The VM host test (`scripts/webos/native_player_host_test.sh`, 14 cases) checks the plugin against a
+fake `libplayerAPIs.so.1` (Load payload, fed streams, seeking).
+
+**Verified on the test TV (G4, webOS 9.2, `v2.26.0-webos.8`, 2026-11-23):** Ride or Die S01E07
+(Dolby Vision profile 8.1 MKV, 3840x2160 23.976 fps, E-AC-3 Atmos) from ether plays through the
+plugin; LG's pipeline reports `hdrType: DolbyVision` and the TV switches to Dolby Vision. Audio is
+fed as is, no feed retries, 12-37 Mbit/s fed. A 110-minute title resumed at 75:22 anchored on the
+keyframe at 75:20.75 and played. ether sent `DOVIProfile` for both titles. Not yet tested on the TV:
+seeking, audio switching, next episode, profiles 5 and 7, the fallback (review doc section D).
+
+**Video window coordinates (verified on the TV):** `setExportedWindow`'s `dstRect` is in the app
+surface's physical coordinates, not the panel's: Plezy's Flutter view is 2880x1620 physical
+(1920x1080 logical at the runner's 1.5x), and the compositor stretches it over the 4K panel.
+Results with the `appdata/native_player_window` override (`WxH`):
+
+| Space | Result on the G4 |
+| --- | --- |
+| 1920x1080 (upstream default, correct on webOS 6 C1) | Picture in the top-left quarter |
+| 3840x2160 and 4320x2430 | Picture larger than the screen: black bar at the top, bottom cut off |
+| 3840x1920 | Bars at the top and on the left |
+| 2880x1620 | Full screen (top and bottom bars are letterboxing inside the video), same as plx-native |
+
+`PlayerWebos._feedScreenSize()` uses the view's physical size; the plugin fits the picture into it
+with the video's aspect ratio. `srcRect` stays the decoded size (3840x2160) and the video plane is
+scaled by the display hardware, so the picture is not reduced to the UI resolution (standard webOS
+plane behaviour; not measured). Log: `[WebOS-Feed] Video window space 2880x1620 (view physical
+size)`. The plugin's Dart `debugPrint` lines do not reach `plezy_native.log`; log from Plezy
+(`appLogger`) or from C++.
 
 - **Selection** (`lib/mpv/player/platform/player_webos.dart`, `WebosFeedMode`): `PlayerWebos` opens
   a direct-play video (not HLS, not live, not audio-only) through the plugin when the server's media

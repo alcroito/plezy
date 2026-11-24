@@ -37,7 +37,7 @@ fixes; section B still needs a TV.
 | B3 | FFmpeg's `dovi_rpu` filter rewrites only an RPU that is the last NAL of the access unit; real UHD Blu-ray remuxes may have type 63 after it, leaving a profile 7 RPU under a profile 8 declaration (plx-native rewrites every type 62, `ff.rs:2780`) | Check `AU#` log lines on a real remux | Convert every RPU NAL |
 | B4 | Extension block order after conversion differs from dovi_tool (Level 6 first); no source says LG cares | Compare on screen with a dovi_tool-converted file | |
 | B5 | plx-native clears Level 5 active-area offsets that do not fit the picture (`docs/dolby-vision.md` 1a; `ff.rs:2361-2380`) | Cropped encode with master offsets | Port the check |
-| B6 | Aspect ratio: src = video size, dst = 1920x1080 in both | 2.39:1 file (3840x1600) | Fit the dst rect |
+| B6 | Aspect ratio: src = video size, dst = 1920x1080 in both | 2.39:1 file (3840x1600) | Fit the dst rect (done: fitted into the view's physical size; on the G4 the space is 2880x1620, see `WEBOS_DEVICE_NOTES.md` section 12) |
 | B7 | DTS always re-encoded to E-AC-3; plx-native feeds DTS core when the codec table and `/etc/gst/gstcool.conf` list a decoder (`devcaps.rs:486-560`) | Read both files on the G4 | Feed DTS as is when supported |
 | B8 | Background handling done by both the plugin (`releaseInBackground`) and Plezy (`lifecycle.dart:283-330`) | Suspend and resume during playback | `releaseInBackground: false` if Plezy's handling suffices |
 | B9 | mbedtls uses software AES on 32-bit ARM | CPU on a high-bitrate 4K remux over https | |
@@ -117,6 +117,9 @@ controller changes, the anchoring bound (no endless loop), the A7 refused-Seek p
 formatting, PTS math, and the stderr redirect.
 
 ## D. TV test order
+
+Done on the G4 (2026-11-23): step 1 (`hdrType` DolbyVision from a fresh start and when resuming
+part-way in; the video window needed the fix in B6). The rest is still open.
 
 1. Profile 8.1 MKV from a fresh start: `hdrType` DolbyVision in the log, and
    `luna://com.webos.settingsservice/getSystemSettings` reports `dimension.dynamicRange=dolbyHdr`.

@@ -107,8 +107,9 @@ network-input socket) keys and pointer, but only with stdin kept open:
 
 ## Open issues
 
-- The native player path (Dolby Vision through `webos_native_player`) has only run in the VM host test
-  and has not been tested on a TV (`WEBOS_DEVICE_NOTES.md` section 12).
+- The native player path (Dolby Vision through `webos_native_player`) shows Dolby Vision on the G4
+  (profile 8.1 MKV, start and resume); seeking, audio switching, next episode, profiles 5 and 7 and
+  the fallback are not yet tested on a TV (`WEBOS_DOLBY_VISION_REVIEW.md` section D).
 - Magic Remote pointer: LG's embedder handles pointer input on one Wayland seat only; the runner
   works around it (`WEBOS_DEVICE_NOTES.md` section 8). Not tested on webOS 25-26.
 - If showing the Magic Remote cursor makes the whole TV lag, or screenshots hang, check `dmesg` for
